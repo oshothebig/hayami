@@ -1,28 +1,18 @@
 //! hayami: keyboard-driven pull request review app for macOS.
 
+mod keychain;
+mod keys;
+mod root;
+mod theme;
+
 use gpui::{
-    App, Application, Bounds, Context, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rgb, size,
+    App, Application, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions,
+    prelude::*, px, size,
 };
-
-struct RootView;
-
-impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgb(0x1e1e1e))
-            .text_color(rgb(0xd4d4d4))
-            .child(hayami_core::APP_NAME)
-    }
-}
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+        let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -32,9 +22,15 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| RootView),
+            |window, cx| cx.new(|cx| root::RootView::new(window, cx)),
         )
         .expect("failed to open the main window");
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.activate(true);
     });
 }

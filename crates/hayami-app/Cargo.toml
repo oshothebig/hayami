@@ -21,3 +21,6 @@ gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"

@@ -9,6 +9,8 @@ pub mod diff;
 pub mod file_tree;
 pub mod git;
 pub mod github;
+pub mod highlight;
+pub mod intraline;
 pub mod keymap;
 pub mod palette;
 pub mod paths;

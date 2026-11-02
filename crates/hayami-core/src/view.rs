@@ -8,6 +8,18 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::diff::{FileContent, FileDiff, LineKind};
+use crate::highlight::{FileHighlights, HighlightKind, Span};
+use crate::intraline::word_diff;
+
+/// Unified or side-by-side display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    /// One column with removed and added lines interleaved.
+    #[default]
+    Unified,
+    /// Old and new side by side.
+    Split,
+}
 
 /// Address of a display row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,7 +47,8 @@ pub enum RowAddr {
         file: usize,
         /// Hunk index.
         hunk: usize,
-        /// Line index within the hunk.
+        /// Row within the hunk body: an index into [`crate::diff::Hunk::lines`]
+        /// in unified mode, into [`crate::diff::Hunk::split`] in split mode.
         line: usize,
     },
 }
@@ -63,6 +76,78 @@ pub struct LineView<'a> {
     pub new_no: Option<u32>,
     /// Text without line terminator.
     pub text: &'a str,
+    /// Syntax highlight spans (empty until highlighting finished).
+    pub spans: &'a [Span],
+    /// Byte ranges changed within the line (intra-line diff).
+    pub emphasis: Vec<Range<usize>>,
+}
+
+/// A styled piece of a line, ready for rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    /// Byte range in the display text.
+    pub range: Range<usize>,
+    /// Syntax category, if any.
+    pub kind: Option<HighlightKind>,
+    /// Whether the piece changed within the line.
+    pub emphasized: bool,
+}
+
+/// Width tabs are expanded to.
+pub const TAB_WIDTH: usize = 4;
+
+impl LineView<'_> {
+    /// Display text (tabs expanded) and non-overlapping styled segments
+    /// covering it.
+    pub fn segments(&self) -> (String, Vec<Segment>) {
+        let text = self.text;
+        let mut cuts = vec![0, text.len()];
+        for span in self.spans {
+            cuts.extend([
+                span.range.start.min(text.len()),
+                span.range.end.min(text.len()),
+            ]);
+        }
+        for r in &self.emphasis {
+            cuts.extend([r.start.min(text.len()), r.end.min(text.len())]);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+
+        // Offsets shift by TAB_WIDTH - 1 for every tab before them.
+        let tabs: Vec<usize> = text.match_indices('\t').map(|(i, _)| i).collect();
+        let map = |offset: usize| offset + tabs.partition_point(|&t| t < offset) * (TAB_WIDTH - 1);
+        let display = text.replace('\t', &" ".repeat(TAB_WIDTH));
+
+        let mut segments: Vec<Segment> = Vec::new();
+        for pair in cuts.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            if start >= end {
+                continue;
+            }
+            let kind = self
+                .spans
+                .iter()
+                .find(|s| s.range.start <= start && start < s.range.end)
+                .map(|s| s.kind);
+            let emphasized = self
+                .emphasis
+                .iter()
+                .any(|r| r.start <= start && start < r.end);
+            let range = map(start)..map(end);
+            match segments.last_mut() {
+                Some(last) if last.kind == kind && last.emphasized == emphasized => {
+                    last.range.end = range.end;
+                }
+                _ => segments.push(Segment {
+                    range,
+                    kind,
+                    emphasized,
+                }),
+            }
+        }
+        (display, segments)
+    }
 }
 
 /// Content of a display row.
@@ -79,8 +164,15 @@ pub enum RowContent<'a> {
     Notice(&'static str),
     /// Hunk header text.
     HunkHeader(String),
-    /// A diff line.
+    /// A diff line (unified mode).
     Line(LineView<'a>),
+    /// A side-by-side row (split mode).
+    Split {
+        /// Old side.
+        left: Option<LineView<'a>>,
+        /// New side.
+        right: Option<LineView<'a>>,
+    },
 }
 
 /// A display row.
@@ -98,6 +190,8 @@ pub struct DisplayRow<'a> {
 #[derive(Debug, Clone)]
 pub struct DiffView {
     files: Arc<Vec<FileDiff>>,
+    highlights: Vec<Option<Arc<FileHighlights>>>,
+    mode: ViewMode,
     collapsed: Vec<bool>,
     /// Start row of each file, plus the total row count at the end.
     file_starts: Vec<usize>,
@@ -111,6 +205,8 @@ impl DiffView {
     pub fn new(files: Arc<Vec<FileDiff>>) -> Self {
         let collapsed = vec![false; files.len()];
         let mut view = Self {
+            highlights: vec![None; files.len()],
+            mode: ViewMode::Unified,
             files,
             collapsed,
             file_starts: Vec::new(),
@@ -126,6 +222,64 @@ impl DiffView {
         &self.files
     }
 
+    /// Current display mode.
+    pub fn mode(&self) -> ViewMode {
+        self.mode
+    }
+
+    /// Switches the display mode, keeping the cursor on the same line.
+    pub fn set_mode(&mut self, mode: ViewMode) {
+        if mode == self.mode {
+            return;
+        }
+        let addr = (self.row_count() > 0).then(|| self.locate(self.cursor));
+        let old_mode = self.mode;
+        self.mode = mode;
+        self.relayout();
+        if let Some(addr) = addr {
+            let mapped = match addr {
+                RowAddr::Line { file, hunk, line } => {
+                    let h = &self.files[file].hunks()[hunk];
+                    let line = match old_mode {
+                        // Unified line → split row containing it.
+                        ViewMode::Unified => h.split_row_of(line),
+                        // Split row → its new-side line, else the old side.
+                        ViewMode::Split => {
+                            let row = h.split[line];
+                            row.right.or(row.left).unwrap_or(0) as usize
+                        }
+                    };
+                    RowAddr::Line { file, hunk, line }
+                }
+                other => other,
+            };
+            self.cursor = self.row_of(mapped);
+        }
+    }
+
+    /// Toggles between unified and split.
+    pub fn toggle_mode(&mut self) {
+        self.set_mode(match self.mode {
+            ViewMode::Unified => ViewMode::Split,
+            ViewMode::Split => ViewMode::Unified,
+        });
+    }
+
+    /// Attaches syntax highlights of `file` (computed in the background).
+    pub fn set_highlights(&mut self, file: usize, highlights: FileHighlights) {
+        if let Some(slot) = self.highlights.get_mut(file) {
+            *slot = Some(Arc::new(highlights));
+        }
+    }
+
+    /// Number of body rows of a hunk in the current mode.
+    fn hunk_body_rows(&self, hunk: &crate::diff::Hunk) -> usize {
+        match self.mode {
+            ViewMode::Unified => hunk.lines.len(),
+            ViewMode::Split => hunk.split.len(),
+        }
+    }
+
     fn relayout(&mut self) {
         self.hunk_starts = (0..self.files.len()).map(|f| self.layout_file(f)).collect();
         self.rebuild_file_starts();
@@ -139,7 +293,7 @@ impl DiffView {
             .iter()
             .map(|hunk| {
                 let start = offset;
-                offset += 1 + hunk.lines.len();
+                offset += 1 + self.hunk_body_rows(hunk);
                 start
             })
             .collect()
@@ -165,7 +319,10 @@ impl DiffView {
             FileContent::Binary => 2,
             FileContent::Text { hunks, .. } if hunks.is_empty() => 2,
             FileContent::Text { hunks, .. } => {
-                1 + hunks.iter().map(|h| 1 + h.lines.len()).sum::<usize>()
+                1 + hunks
+                    .iter()
+                    .map(|h| 1 + self.hunk_body_rows(h))
+                    .sum::<usize>()
             }
         }
     }
@@ -246,16 +403,49 @@ impl DiffView {
             RowAddr::HunkHeader { file, hunk } => {
                 RowContent::HunkHeader(self.files[file].hunks()[hunk].header())
             }
-            RowAddr::Line { file, hunk, line } => {
-                let diff = &self.files[file];
-                let l = &diff.hunks()[hunk].lines[line];
-                RowContent::Line(LineView {
-                    kind: l.kind,
-                    old_no: l.old.map(|n| n + 1),
-                    new_no: l.new.map(|n| n + 1),
-                    text: diff.line_text(l),
-                })
+            RowAddr::Line { file, hunk, line } => match self.mode {
+                ViewMode::Unified => RowContent::Line(self.line_view(file, hunk, line)),
+                ViewMode::Split => {
+                    let row = self.files[file].hunks()[hunk].split[line];
+                    RowContent::Split {
+                        left: row.left.map(|l| self.line_view(file, hunk, l as usize)),
+                        right: row.right.map(|l| self.line_view(file, hunk, l as usize)),
+                    }
+                }
+            },
+        }
+    }
+
+    /// Builds one line with its highlight spans and intra-line emphasis.
+    fn line_view(&self, file: usize, hunk: usize, line: usize) -> LineView<'_> {
+        let diff = &self.files[file];
+        let h = &diff.hunks()[hunk];
+        let l = &h.lines[line];
+        let text = diff.line_text(l);
+        let highlights = self.highlights[file].as_deref();
+        let spans = match (l.kind, highlights) {
+            (LineKind::Removed, Some(hl)) => side_spans(hl.old.as_ref(), l.old),
+            (_, Some(hl)) => side_spans(hl.new.as_ref(), l.new),
+            (_, None) => &[],
+        };
+        let emphasis = match (l.kind, h.partner[line]) {
+            (LineKind::Context, _) | (_, None) => Vec::new(),
+            (kind, Some(partner)) => {
+                let other = diff.line_text(&h.lines[partner as usize]);
+                if kind == LineKind::Removed {
+                    word_diff(text, other).old
+                } else {
+                    word_diff(other, text).new
+                }
             }
+        };
+        LineView {
+            kind: l.kind,
+            old_no: l.old.map(|n| n + 1),
+            new_no: l.new.map(|n| n + 1),
+            text,
+            spans,
+            emphasis,
         }
     }
 
@@ -385,6 +575,13 @@ impl DiffView {
         if file < self.files.len() {
             self.cursor = self.file_starts[file];
         }
+    }
+}
+
+fn side_spans(lines: Option<&crate::highlight::LineSpans>, index: Option<u32>) -> &[Span] {
+    match (lines, index) {
+        (Some(lines), Some(i)) => lines.get(i as usize).map_or(&[], Vec::as_slice),
+        _ => &[],
     }
 }
 
@@ -558,6 +755,188 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn split_rows_pair_old_and_new() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nc\nd\n";
+        let files = Arc::new(vec![FileDiff::from_blobs(
+            "f.txt".into(),
+            FileStatus::Modified,
+            Some(old.as_bytes()),
+            Some(new.as_bytes()),
+        )]);
+        let mut view = DiffView::new(files);
+        // Unified: header, hunk header, a, -b, +B, c, +d.
+        assert_eq!(view.row_count(), 7);
+        view.set_mode(ViewMode::Split);
+        // Split: header, hunk header, a|a, b|B, c|c, _|d.
+        assert_eq!(view.row_count(), 6);
+        let cells: Vec<(Option<u32>, Option<u32>)> = view
+            .rows(2..6)
+            .iter()
+            .map(|r| match &r.content {
+                RowContent::Split { left, right } => (
+                    left.as_ref().and_then(|l| l.old_no),
+                    right.as_ref().and_then(|l| l.new_no),
+                ),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            cells,
+            [
+                (Some(1), Some(1)),
+                (Some(2), Some(2)),
+                (Some(3), Some(3)),
+                (None, Some(4))
+            ]
+        );
+        for row in 0..view.row_count() {
+            assert_eq!(view.row_of(view.locate(row)), row);
+        }
+    }
+
+    #[test]
+    fn mode_switch_keeps_cursor_line() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nc\nd\n";
+        let files = Arc::new(vec![FileDiff::from_blobs(
+            "f.txt".into(),
+            FileStatus::Modified,
+            Some(old.as_bytes()),
+            Some(new.as_bytes()),
+        )]);
+        let mut view = DiffView::new(files);
+        // Cursor on "+B" (unified row 4).
+        view.set_cursor(4);
+        view.toggle_mode();
+        assert_eq!(view.mode(), ViewMode::Split);
+        assert_eq!(view.cursor(), 3);
+        // Cursor on "_|d" → unified "+d".
+        view.set_cursor(5);
+        view.toggle_mode();
+        assert_eq!(view.mode(), ViewMode::Unified);
+        assert_eq!(view.cursor(), 6);
+        match &view.rows(6..7)[0].content {
+            RowContent::Line(l) => assert_eq!(l.text, "d"),
+            other => panic!("{other:?}"),
+        }
+        // Headers map to headers.
+        view.set_cursor(1);
+        view.toggle_mode();
+        assert_eq!(
+            view.locate(view.cursor()),
+            RowAddr::HunkHeader { file: 0, hunk: 0 }
+        );
+    }
+
+    #[test]
+    fn paired_lines_get_word_emphasis() {
+        let old = "let total = compute(a);\n";
+        let new = "let total = calculate(a);\n";
+        let files = Arc::new(vec![FileDiff::from_blobs(
+            "f.rs".into(),
+            FileStatus::Modified,
+            Some(old.as_bytes()),
+            Some(new.as_bytes()),
+        )]);
+        let view = DiffView::new(files);
+        let rows = view.rows(2..4);
+        let (RowContent::Line(removed), RowContent::Line(added)) =
+            (&rows[0].content, &rows[1].content)
+        else {
+            panic!("{rows:?}");
+        };
+        assert_eq!(&removed.text[removed.emphasis[0].clone()], "compute");
+        assert_eq!(&added.text[added.emphasis[0].clone()], "calculate");
+    }
+
+    #[test]
+    fn highlights_follow_whole_file_across_hunk_start() {
+        use crate::highlight::{HighlightKind, highlight_file};
+        // The hunk starts inside a block comment that opens far above it.
+        let mut old = String::from("/*\n");
+        for i in 0..10 {
+            old.push_str(&format!("let x{i} = \"not code\";\n"));
+        }
+        old.push_str("*/\nfn main() {}\n");
+        let new = old.replace("let x8 = \"not code\";", "let x8 = \"still a comment\";");
+        let files = Arc::new(vec![FileDiff::from_blobs(
+            "lib.rs".into(),
+            FileStatus::Modified,
+            Some(old.as_bytes()),
+            Some(new.as_bytes()),
+        )]);
+        let mut view = DiffView::new(files.clone());
+        // Before highlighting finishes, lines are plain.
+        let plain = view.rows(0..view.row_count());
+        assert!(plain.iter().all(|r| match &r.content {
+            RowContent::Line(l) => l.spans.is_empty(),
+            _ => true,
+        }));
+        view.set_highlights(0, highlight_file(&files[0]));
+        let rows = view.rows(0..view.row_count());
+        let lines: Vec<&LineView> = rows
+            .iter()
+            .filter_map(|r| match &r.content {
+                RowContent::Line(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        // Hunk starts at "let x5" (3 lines of context), inside the comment.
+        assert_eq!(lines[0].text, "let x5 = \"not code\";");
+        for line in lines.iter().take_while(|l| l.text.starts_with("let")) {
+            assert_eq!(
+                line.spans.iter().map(|s| s.kind).collect::<Vec<_>>(),
+                [HighlightKind::Comment],
+                "{}",
+                line.text
+            );
+        }
+        let main = lines.iter().find(|l| l.text.starts_with("fn")).unwrap();
+        assert_eq!(main.spans[0].kind, HighlightKind::Keyword);
+    }
+
+    #[test]
+    fn segments_merge_spans_emphasis_and_expand_tabs() {
+        use crate::highlight::HighlightKind;
+        let spans = [
+            Span {
+                range: 1..4,
+                kind: HighlightKind::Keyword,
+            },
+            Span {
+                range: 5..8,
+                kind: HighlightKind::String,
+            },
+        ];
+        let line = LineView {
+            kind: LineKind::Added,
+            old_no: None,
+            new_no: Some(1),
+            text: "\tlet \"a\"",
+            spans: &spans,
+            emphasis: std::iter::once(6..7).collect(),
+        };
+        let (display, segments) = line.segments();
+        assert_eq!(display, "    let \"a\"");
+        let pieces: Vec<(&str, Option<HighlightKind>, bool)> = segments
+            .iter()
+            .map(|s| (&display[s.range.clone()], s.kind, s.emphasized))
+            .collect();
+        assert_eq!(
+            pieces,
+            [
+                ("    ", None, false),
+                ("let", Some(HighlightKind::Keyword), false),
+                (" ", None, false),
+                ("\"", Some(HighlightKind::String), false),
+                ("a", Some(HighlightKind::String), true),
+                ("\"", Some(HighlightKind::String), false),
+            ]
+        );
+    }
+
+    #[test]
     fn empty_view() {
         let view = DiffView::new(Arc::new(Vec::new()));
         assert_eq!(view.row_count(), 0);
@@ -613,9 +992,43 @@ pub(crate) mod tests {
             "rows: {}, visible-range build: {per_frame:?} per frame",
             view.row_count()
         );
-        // Generous bound for unoptimized CI builds; typical is a few µs.
+        // Generous bound for unoptimized CI builds (this includes the
+        // intra-line diff of visible changed lines); release builds take
+        // well under 0.1 ms.
         assert!(
-            per_frame < std::time::Duration::from_millis(5),
+            per_frame < std::time::Duration::from_millis(8),
+            "{per_frame:?}"
+        );
+    }
+
+    /// Same in split mode with highlights attached, including building the
+    /// styled segments the UI renders.
+    #[test]
+    fn visible_split_rows_with_highlights_are_fast() {
+        let files = large_diff(20, 1_000);
+        let mut view = DiffView::new(files.clone());
+        view.set_mode(ViewMode::Split);
+        view.set_highlights(0, crate::highlight::highlight_file(&files[0]));
+        assert!(view.row_count() >= 10_000, "{}", view.row_count());
+        let visible = 60;
+        let step = view.row_count() / 200;
+        let start = std::time::Instant::now();
+        for i in 0..200 {
+            for row in view.rows(i * step..i * step + visible) {
+                if let RowContent::Split { left, right } = &row.content {
+                    for side in [left, right].into_iter().flatten() {
+                        std::hint::black_box(side.segments());
+                    }
+                }
+            }
+        }
+        let per_frame = start.elapsed() / 200;
+        eprintln!(
+            "split rows: {}, visible-range build with segments: {per_frame:?} per frame",
+            view.row_count()
+        );
+        assert!(
+            per_frame < std::time::Duration::from_millis(16),
             "{per_frame:?}"
         );
     }

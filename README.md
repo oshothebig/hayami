@@ -9,6 +9,32 @@ hayami runs on macOS only (GPUI renders with Metal).
 - `crates/hayami-core`: GPUI-independent logic (GitHub API, auth, git, diff, highlighting, display rows, key handling). Builds and tests on Linux too.
 - `crates/hayami-app`: GPUI app (window, rendering, key event plumbing). macOS only.
 
+## Keys
+
+All bindings are defined in one table, `BINDINGS` in `crates/hayami-core/src/keymap.rs`.
+
+| Action | Keys |
+| --- | --- |
+| Move down / up | `j` / `k` (also `↓` / `↑`) |
+| Half page down / up | `Ctrl-d` / `Ctrl-u` |
+| Top / bottom | `gg` / `G` |
+| Open PR (list) | `Enter` |
+| Next / previous hunk | `n` / `p` |
+| Next / previous file | `]` / `[` |
+| Collapse file / all files | `o` / `O` |
+| Unified / split | `Cmd-Shift-D` |
+| Focus file tree / diff | `Cmd-Shift-E` / `Enter` or `Esc` in the tree |
+| Back to PR list | `Cmd-[` |
+| Reload | `Cmd-R` |
+| Command palette | `Cmd-Shift-P` |
+| Quit | `Cmd-Q` |
+
+Vim-style keys are disabled while typing in the palette or the token field.
+
+## Local data
+
+Bare repositories are cached in `$XDG_CACHE_HOME/hayami/repos/<host>/<owner>/<repo>.git` (`~/.cache` when `XDG_CACHE_HOME` is unset or empty). They are created the first time a PR of that repository is opened and can be deleted at any time.
+
 ## Requirements
 
 - Rust stable (edition 2024)

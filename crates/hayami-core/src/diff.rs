@@ -93,6 +93,15 @@ pub struct DiffLine {
     pub new: Option<u32>,
 }
 
+/// One row of the split (side-by-side) view: indices into [`Hunk::lines`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitRow {
+    /// Old-side line (context or removed).
+    pub left: Option<u32>,
+    /// New-side line (context or added).
+    pub right: Option<u32>,
+}
+
 /// A hunk: changed lines with surrounding context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
@@ -106,9 +115,42 @@ pub struct Hunk {
     pub new_len: u32,
     /// Lines in display order.
     pub lines: Vec<DiffLine>,
+    /// Rows of the split view.
+    pub split: Vec<SplitRow>,
+    /// For each line, the paired line (removed ↔ added) used for the
+    /// intra-line diff.
+    pub partner: Vec<Option<u32>>,
 }
 
 impl Hunk {
+    fn new(
+        old_start: u32,
+        old_len: u32,
+        new_start: u32,
+        new_len: u32,
+        lines: Vec<DiffLine>,
+    ) -> Self {
+        let (split, partner) = pair_lines(&lines);
+        Self {
+            old_start,
+            old_len,
+            new_start,
+            new_len,
+            lines,
+            split,
+            partner,
+        }
+    }
+
+    /// Index of the split row containing line `line`.
+    pub fn split_row_of(&self, line: usize) -> usize {
+        let line = line as u32;
+        self.split
+            .iter()
+            .position(|r| r.left == Some(line) || r.right == Some(line))
+            .unwrap_or(0)
+    }
+
     /// `@@ -a,b +c,d @@` header with 1-based line numbers like `git diff`.
     pub fn header(&self) -> String {
         let start = |s: u32, len: u32| if len == 0 { s } else { s + 1 };
@@ -315,16 +357,54 @@ pub fn diff_lines(old: &str, new: &str, context: u32) -> Vec<Hunk> {
             o += 1;
             n += 1;
         }
-        hunks.push(Hunk {
+        hunks.push(Hunk::new(
             old_start,
-            old_len: old_end - old_start,
+            old_end - old_start,
             new_start,
-            new_len: new_end - new_start,
+            new_end - new_start,
             lines,
-        });
+        ));
         i = j + 1;
     }
     hunks
+}
+
+/// Pairs each run of removed lines with the run of added lines that follows
+/// it, row by row, like side-by-side diff tools.
+fn pair_lines(lines: &[DiffLine]) -> (Vec<SplitRow>, Vec<Option<u32>>) {
+    let mut split = Vec::with_capacity(lines.len());
+    let mut partner = vec![None; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].kind == LineKind::Context {
+            split.push(SplitRow {
+                left: Some(i as u32),
+                right: Some(i as u32),
+            });
+            i += 1;
+            continue;
+        }
+        let removed_start = i;
+        while i < lines.len() && lines[i].kind == LineKind::Removed {
+            i += 1;
+        }
+        let added_start = i;
+        while i < lines.len() && lines[i].kind == LineKind::Added {
+            i += 1;
+        }
+        let removed = removed_start..added_start;
+        let added = added_start..i;
+        for k in 0..removed.len().max(added.len()) {
+            let left = (k < removed.len()).then(|| (removed.start + k) as u32);
+            let right = (k < added.len()).then(|| (added.start + k) as u32);
+            if let (Some(l), Some(r)) = (left, right) {
+                partner[l as usize] = Some(r);
+                partner[r as usize] = Some(l);
+            }
+            split.push(SplitRow { left, right });
+        }
+    }
+    (split, partner)
 }
 
 #[cfg(test)]
@@ -410,6 +490,40 @@ mod tests {
         );
         assert_eq!(f.content, FileContent::Binary);
         assert!(f.hunks().is_empty());
+    }
+
+    #[test]
+    fn split_rows_pair_removed_with_added() {
+        let old = "a\nb\nc\nd\n";
+        let new = "a\nB\nC\nX\nd\ne\n";
+        let hunks = diff_lines(old, new, 3);
+        let h = &hunks[0];
+        let row = |r: &SplitRow| {
+            let side = |i: Option<u32>, f: &dyn Fn(&DiffLine) -> Option<u32>| {
+                i.and_then(|i| f(&h.lines[i as usize]))
+            };
+            (side(r.left, &|l| l.old), side(r.right, &|l| l.new))
+        };
+        let rows: Vec<_> = h.split.iter().map(row).collect();
+        assert_eq!(
+            rows,
+            [
+                (Some(0), Some(0)),
+                (Some(1), Some(1)),
+                (Some(2), Some(2)),
+                (None, Some(3)),
+                (Some(3), Some(4)),
+                (None, Some(5)),
+            ]
+        );
+        // b ↔ B are partners for the intra-line diff.
+        let b = h.lines.iter().position(|l| l.old == Some(1)).unwrap();
+        let big_b = h.lines.iter().position(|l| l.new == Some(1)).unwrap();
+        assert_eq!(h.partner[b], Some(big_b as u32));
+        assert_eq!(h.partner[big_b], Some(b as u32));
+        assert_eq!(h.split_row_of(big_b), 1);
+        let x = h.lines.iter().position(|l| l.new == Some(3)).unwrap();
+        assert_eq!(h.partner[x], None);
     }
 
     #[test]

@@ -3,13 +3,13 @@
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    Context, Div, ListHorizontalSizingBehavior, ScrollStrategy, SharedString, Stateful,
-    UniformListScrollHandle, div, prelude::*, px, uniform_list,
+    Context, Div, HighlightStyle, ListHorizontalSizingBehavior, ScrollStrategy, SharedString,
+    Stateful, StyledText, UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use hayami_core::diff::{FileDiff, LineKind};
 use hayami_core::file_tree::{FileTree, TreeRow};
 use hayami_core::github::PrDetail;
-use hayami_core::view::{DiffView, DisplayRow, RowContent};
+use hayami_core::view::{DiffView, DisplayRow, LineView, RowContent, ViewMode};
 
 use crate::root::{RootView, Status};
 use crate::theme;
@@ -98,6 +98,11 @@ impl ReviewScreen {
 }
 
 pub fn render(screen: &ReviewScreen, cx: &mut Context<RootView>) -> Div {
+    let mode = match screen.view.as_ref().map(DiffView::mode) {
+        Some(ViewMode::Split) => "  ·  split",
+        Some(ViewMode::Unified) => "  ·  unified",
+        None => "",
+    };
     let header = match &screen.detail {
         Some(d) => format!(
             "{}  ·  {} ← {}  ·  @{}  ·  review: {}",
@@ -108,7 +113,7 @@ pub fn render(screen: &ReviewScreen, cx: &mut Context<RootView>) -> Div {
             d.review_decision.as_deref().unwrap_or("none")
         ),
         None => screen.title.clone(),
-    };
+    } + mode;
     let body = div().flex().flex_row().flex_grow().min_h_0();
     let body = match &screen.view {
         Some(view) => body
@@ -125,7 +130,7 @@ pub fn render(screen: &ReviewScreen, cx: &mut Context<RootView>) -> Div {
         .child(body)
         .child(crate::root::hint_bar(match screen.focus {
             ReviewFocus::Diff => {
-                "j/k move · n/p hunk · ]/[ file · o collapse · ⌘⇧E tree · ⌘⇧P commands · ⌘[ back"
+                "j/k move · n/p hunk · ]/[ file · o collapse · ⌘⇧D split · ⌘⇧E tree · ⌘⇧P commands · ⌘[ back"
             }
             ReviewFocus::Tree => {
                 "j/k select file · ↩/esc focus diff · o collapse · ⌘⇧P commands · ⌘[ back"
@@ -244,7 +249,11 @@ fn render_diff(view: &DiffView, screen: &ReviewScreen, cx: &mut Context<RootView
                 .collect::<Vec<_>>()
         }),
     )
-    .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+    // Unified rows scroll horizontally; split halves clip to half the width.
+    .with_horizontal_sizing_behavior(match view.mode() {
+        ViewMode::Unified => ListHorizontalSizingBehavior::Unconstrained,
+        ViewMode::Split => ListHorizontalSizingBehavior::FitList,
+    })
     .track_scroll(screen.diff_scroll.clone())
     .size_full();
     div().flex_grow().min_w_0().h_full().child(list)
@@ -305,16 +314,76 @@ fn render_diff_row(row: &DisplayRow<'_>, is_cursor: bool) -> Stateful<Div> {
             .pl(px(100.0))
             .child(text.clone()),
         RowContent::Line(line) => {
-            let (bg, sign) = match line.kind {
-                LineKind::Added => (Some(theme::added_bg()), "+"),
-                LineKind::Removed => (Some(theme::removed_bg()), "-"),
-                LineKind::Context => (None, " "),
-            };
+            let (bg, sign) = line_style(line.kind);
             base.when_some(bg, |d, bg| d.bg(bg))
                 .child(line_number(line.old_no))
                 .child(line_number(line.new_no))
                 .child(div().w(px(16.0)).flex_shrink_0().child(sign))
-                .child(SharedString::from(line.text.replace('\t', "    ")))
+                .child(styled_text(line))
         }
+        RowContent::Split { left, right } => base
+            .child(split_half(left.as_ref(), true))
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .bg(theme::border()),
+            )
+            .child(split_half(right.as_ref(), false)),
     }
+}
+
+fn line_style(kind: LineKind) -> (Option<gpui::Rgba>, &'static str) {
+    match kind {
+        LineKind::Added => (Some(theme::added_bg()), "+"),
+        LineKind::Removed => (Some(theme::removed_bg()), "-"),
+        LineKind::Context => (None, " "),
+    }
+}
+
+/// One side of a split row; an empty side is drawn as filler.
+fn split_half(line: Option<&LineView<'_>>, old_side: bool) -> Div {
+    let half = div()
+        .w_1_2()
+        .h_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .overflow_hidden();
+    let Some(line) = line else {
+        return half.bg(theme::filler_bg());
+    };
+    let (bg, sign) = line_style(line.kind);
+    half.when_some(bg, |d, bg| d.bg(bg))
+        .child(line_number(if old_side {
+            line.old_no
+        } else {
+            line.new_no
+        }))
+        .child(div().w(px(16.0)).flex_shrink_0().child(sign))
+        .child(styled_text(line))
+}
+
+/// Line text with syntax colors and intra-line emphasis.
+fn styled_text(line: &LineView<'_>) -> StyledText {
+    let (text, segments) = line.segments();
+    let emphasis = match line.kind {
+        LineKind::Added => Some(theme::added_emphasis_bg()),
+        LineKind::Removed => Some(theme::removed_emphasis_bg()),
+        LineKind::Context => None,
+    };
+    let highlights: Vec<_> = segments
+        .into_iter()
+        .filter(|s| s.kind.is_some() || s.emphasized)
+        .map(|s| {
+            let style = HighlightStyle {
+                color: s.kind.map(|k| theme::syntax(k).into()),
+                background_color: emphasis.filter(|_| s.emphasized).map(Into::into),
+                ..Default::default()
+            };
+            (s.range, style)
+        })
+        .collect();
+    StyledText::new(SharedString::from(text)).with_highlights(highlights)
 }

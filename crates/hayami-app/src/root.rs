@@ -14,6 +14,7 @@ use hayami_core::auth::{
 use hayami_core::diff::FileDiff;
 use hayami_core::git::load_pr_diff;
 use hayami_core::github::{GithubClient, GithubError, PrDetail, PrList, ReqwestTransport};
+use hayami_core::highlight::highlight_file;
 use hayami_core::keymap::{Command, KeyContext, KeyInterpreter, KeyOutcome};
 use hayami_core::palette::Palette;
 use hayami_core::paths::repos_root;
@@ -229,7 +230,7 @@ impl RootView {
                     .map_err(|e| OpenError::Other(e.to_string()))?;
                 Ok((detail, diff.files))
             },
-            move |this, result, _cx| {
+            move |this, result, cx| {
                 if this.generation != generation {
                     return;
                 }
@@ -240,6 +241,7 @@ impl RootView {
                             screen.set_files(files);
                             screen.sync_after_move();
                         }
+                        this.highlight_batch(generation, 0, cx);
                         Status::Idle
                     }
                     Err(OpenError::Github(e)) => this.handle_github_error(e),
@@ -251,6 +253,44 @@ impl RootView {
             },
         );
         Self::poll_progress(generation, cx);
+    }
+
+    /// Highlights files `start..start + HIGHLIGHT_BATCH` in the background,
+    /// applies the result and continues with the next batch. Lines render
+    /// as plain text until their file is done.
+    fn highlight_batch(&mut self, generation: u64, start: usize, cx: &mut Context<Self>) {
+        const HIGHLIGHT_BATCH: usize = 8;
+        let Some(files) = self
+            .review()
+            .and_then(|s| s.view.as_ref())
+            .map(|v| v.files().clone())
+        else {
+            return;
+        };
+        if start >= files.len() {
+            return;
+        }
+        let end = (start + HIGHLIGHT_BATCH).min(files.len());
+        Self::background(
+            cx,
+            move || {
+                files[start..end]
+                    .iter()
+                    .map(highlight_file)
+                    .collect::<Vec<_>>()
+            },
+            move |this, highlights, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                if let Some(view) = this.review_mut().and_then(|s| s.view.as_mut()) {
+                    for (offset, h) in highlights.into_iter().enumerate() {
+                        view.set_highlights(start + offset, h);
+                    }
+                }
+                this.highlight_batch(generation, end, cx);
+            },
+        );
     }
 
     /// Re-renders periodically while a PR is loading so progress is visible.
@@ -417,7 +457,8 @@ impl RootView {
             | Command::NextFile
             | Command::PrevFile
             | Command::ToggleCollapse
-            | Command::ToggleCollapseAll => {
+            | Command::ToggleCollapseAll
+            | Command::ToggleViewMode => {
                 if let Some(screen) = self.review_mut() {
                     let tree_file = screen.tree.selected_file();
                     let tree_focused = screen.focus == ReviewFocus::Tree;
@@ -445,6 +486,7 @@ impl RootView {
                                     view.toggle_collapse(file);
                                 }
                             }
+                            Command::ToggleViewMode => view.toggle_mode(),
                             _ => view.toggle_collapse_all(),
                         }
                         screen.sync_after_move();

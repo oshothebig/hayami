@@ -175,6 +175,8 @@ pub enum Command {
     ToggleCollapse,
     /// Collapse or expand all files.
     ToggleCollapseAll,
+    /// Switch between unified and split display.
+    ToggleViewMode,
     /// Move the keyboard focus to the file tree.
     FocusFileTree,
     /// Move the keyboard focus to the diff.
@@ -212,6 +214,7 @@ impl Command {
             Command::PrevFile => "Previous File",
             Command::ToggleCollapse => "Toggle Collapse File",
             Command::ToggleCollapseAll => "Toggle Collapse All Files",
+            Command::ToggleViewMode => "Toggle Unified / Split View",
             Command::FocusFileTree => "Focus File Tree",
             Command::FocusDiff => "Focus Diff",
             Command::CommandPalette => "Command Palette",
@@ -234,6 +237,7 @@ pub const PALETTE_COMMANDS: &[Command] = &[
     Command::PrevFile,
     Command::ToggleCollapse,
     Command::ToggleCollapseAll,
+    Command::ToggleViewMode,
     Command::FocusFileTree,
     Command::FocusDiff,
     Command::MoveDown,
@@ -292,6 +296,7 @@ pub const BINDINGS: &[Binding] = &[
     bind("shift-o", Command::ToggleCollapseAll, Scope::Review),
     // macOS style commands.
     bind("cmd-[", Command::Back, Scope::Review),
+    bind("cmd-shift-d", Command::ToggleViewMode, Scope::Review),
     bind("cmd-shift-e", Command::FocusFileTree, Scope::Review),
     bind("cmd-shift-p", Command::CommandPalette, Scope::Global),
     bind("cmd-r", Command::Reload, Scope::Global),
@@ -515,6 +520,7 @@ mod tests {
             ("[", KeyContext::FileTree, Command::PrevFile),
             ("o", KeyContext::Diff, Command::ToggleCollapse),
             ("cmd-shift-e", KeyContext::Diff, Command::FocusFileTree),
+            ("cmd-shift-d", KeyContext::FileTree, Command::ToggleViewMode),
             ("cmd-[", KeyContext::Diff, Command::Back),
             ("cmd-shift-p", KeyContext::PrList, Command::CommandPalette),
             ("enter", KeyContext::FileTree, Command::FocusDiff),

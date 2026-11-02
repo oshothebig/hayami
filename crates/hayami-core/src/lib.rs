@@ -10,6 +10,7 @@ pub mod file_tree;
 pub mod git;
 pub mod github;
 pub mod keymap;
+pub mod palette;
 pub mod paths;
 pub mod pr_list;
 pub mod text_input;

@@ -119,12 +119,14 @@ pub enum Scope {
     Global,
     /// PR list, file tree and diff (everything that is not a text field).
     Navigation,
-    /// PR list and file tree.
-    List,
+    /// PR list only.
+    PrList,
     /// Review screen (file tree and diff).
     Review,
     /// Diff only.
     Diff,
+    /// File tree only.
+    Tree,
     /// Text fields only.
     TextInput,
 }
@@ -135,9 +137,10 @@ impl Scope {
         match self {
             Scope::Global => true,
             Scope::Navigation => cx != K::TextInput,
-            Scope::List => matches!(cx, K::PrList | K::FileTree),
+            Scope::PrList => cx == K::PrList,
             Scope::Review => matches!(cx, K::FileTree | K::Diff),
             Scope::Diff => cx == K::Diff,
+            Scope::Tree => cx == K::FileTree,
             Scope::TextInput => cx == K::TextInput,
         }
     }
@@ -160,6 +163,24 @@ pub enum Command {
     Bottom,
     /// Open the selected item.
     Open,
+    /// Jump to the next hunk.
+    NextHunk,
+    /// Jump to the previous hunk.
+    PrevHunk,
+    /// Jump to the next file.
+    NextFile,
+    /// Jump to the previous file.
+    PrevFile,
+    /// Collapse or expand the current file.
+    ToggleCollapse,
+    /// Collapse or expand all files.
+    ToggleCollapseAll,
+    /// Move the keyboard focus to the file tree.
+    FocusFileTree,
+    /// Move the keyboard focus to the diff.
+    FocusDiff,
+    /// Open the command palette.
+    CommandPalette,
     /// Go back to the PR list.
     Back,
     /// Reload from GitHub.
@@ -185,6 +206,15 @@ impl Command {
             Command::Top => "Go to Top",
             Command::Bottom => "Go to Bottom",
             Command::Open => "Open Selected",
+            Command::NextHunk => "Next Hunk",
+            Command::PrevHunk => "Previous Hunk",
+            Command::NextFile => "Next File",
+            Command::PrevFile => "Previous File",
+            Command::ToggleCollapse => "Toggle Collapse File",
+            Command::ToggleCollapseAll => "Toggle Collapse All Files",
+            Command::FocusFileTree => "Focus File Tree",
+            Command::FocusDiff => "Focus Diff",
+            Command::CommandPalette => "Command Palette",
             Command::Back => "Back to Pull Request List",
             Command::Reload => "Reload",
             Command::Quit => "Quit hayami",
@@ -194,6 +224,30 @@ impl Command {
         }
     }
 }
+
+/// Commands listed in the command palette (everything except text field
+/// editing, which only makes sense while typing).
+pub const PALETTE_COMMANDS: &[Command] = &[
+    Command::NextHunk,
+    Command::PrevHunk,
+    Command::NextFile,
+    Command::PrevFile,
+    Command::ToggleCollapse,
+    Command::ToggleCollapseAll,
+    Command::FocusFileTree,
+    Command::FocusDiff,
+    Command::MoveDown,
+    Command::MoveUp,
+    Command::HalfPageDown,
+    Command::HalfPageUp,
+    Command::Top,
+    Command::Bottom,
+    Command::Open,
+    Command::Back,
+    Command::Reload,
+    Command::CommandPalette,
+    Command::Quit,
+];
 
 /// A default key binding.
 #[derive(Debug, Clone, Copy)]
@@ -227,9 +281,19 @@ pub const BINDINGS: &[Binding] = &[
     bind("ctrl-u", Command::HalfPageUp, Scope::Navigation),
     bind("g g", Command::Top, Scope::Navigation),
     bind("shift-g", Command::Bottom, Scope::Navigation),
-    bind("enter", Command::Open, Scope::List),
+    bind("enter", Command::Open, Scope::PrList),
+    bind("enter", Command::FocusDiff, Scope::Tree),
+    bind("escape", Command::FocusDiff, Scope::Tree),
+    bind("n", Command::NextHunk, Scope::Diff),
+    bind("p", Command::PrevHunk, Scope::Diff),
+    bind("]", Command::NextFile, Scope::Review),
+    bind("[", Command::PrevFile, Scope::Review),
+    bind("o", Command::ToggleCollapse, Scope::Review),
+    bind("shift-o", Command::ToggleCollapseAll, Scope::Review),
     // macOS style commands.
     bind("cmd-[", Command::Back, Scope::Review),
+    bind("cmd-shift-e", Command::FocusFileTree, Scope::Review),
+    bind("cmd-shift-p", Command::CommandPalette, Scope::Global),
     bind("cmd-r", Command::Reload, Scope::Global),
     bind("cmd-q", Command::Quit, Scope::Global),
     bind("enter", Command::Confirm, Scope::TextInput),
@@ -439,6 +503,42 @@ mod tests {
             k.handle(key("cmd-q"), KeyContext::TextInput),
             KeyOutcome::Command(Command::Quit)
         );
+    }
+
+    #[test]
+    fn review_bindings() {
+        let mut k = KeyInterpreter::new();
+        let cases = [
+            ("n", KeyContext::Diff, Command::NextHunk),
+            ("p", KeyContext::Diff, Command::PrevHunk),
+            ("]", KeyContext::Diff, Command::NextFile),
+            ("[", KeyContext::FileTree, Command::PrevFile),
+            ("o", KeyContext::Diff, Command::ToggleCollapse),
+            ("cmd-shift-e", KeyContext::Diff, Command::FocusFileTree),
+            ("cmd-[", KeyContext::Diff, Command::Back),
+            ("cmd-shift-p", KeyContext::PrList, Command::CommandPalette),
+            ("enter", KeyContext::FileTree, Command::FocusDiff),
+            ("enter", KeyContext::PrList, Command::Open),
+        ];
+        for (spec, cx, command) in cases {
+            assert_eq!(
+                k.handle(key(spec), cx),
+                KeyOutcome::Command(command),
+                "{spec}"
+            );
+        }
+        // Diff-only keys do nothing on the PR list.
+        assert_eq!(
+            k.handle(key("n"), KeyContext::PrList),
+            KeyOutcome::Unhandled
+        );
+    }
+
+    #[test]
+    fn every_palette_command_has_a_title() {
+        for command in PALETTE_COMMANDS {
+            assert!(!command.title().is_empty());
+        }
     }
 
     #[test]

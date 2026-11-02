@@ -289,6 +289,97 @@ impl DiffView {
         self.set_cursor(usize::MAX);
     }
 
+    /// Whether `file` is collapsed.
+    pub fn is_collapsed(&self, file: usize) -> bool {
+        self.collapsed.get(file).copied().unwrap_or(false)
+    }
+
+    /// Collapses or expands `file`; the cursor moves to its header.
+    pub fn toggle_collapse(&mut self, file: usize) {
+        if file >= self.files.len() {
+            return;
+        }
+        self.collapsed[file] = !self.collapsed[file];
+        self.rebuild_file_starts();
+        self.cursor = self.file_starts[file];
+    }
+
+    /// Collapses all files, or expands all if every file is collapsed.
+    /// The cursor stays on the current file's header.
+    pub fn toggle_collapse_all(&mut self) {
+        let current = self.current_file();
+        let collapse = self.collapsed.iter().any(|c| !c);
+        self.collapsed.iter_mut().for_each(|c| *c = collapse);
+        self.rebuild_file_starts();
+        self.cursor = current.map_or(0, |f| self.file_starts[f]);
+    }
+
+    /// Visible hunk header rows of `file` (none when collapsed).
+    fn hunk_rows(&self, file: usize) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        let start = self.file_starts[file];
+        let starts: &[usize] = if self.collapsed[file] {
+            &[]
+        } else {
+            &self.hunk_starts[file]
+        };
+        starts.iter().map(move |s| start + s)
+    }
+
+    /// Moves to the next hunk header after the cursor, across files.
+    /// Returns false (and stays) if there is none.
+    pub fn next_hunk(&mut self) -> bool {
+        let Some(current) = self.current_file() else {
+            return false;
+        };
+        let cursor = self.cursor;
+        let target = (current..self.files.len())
+            .flat_map(|f| self.hunk_rows(f))
+            .find(|&row| row > cursor);
+        target.map(|row| self.cursor = row).is_some()
+    }
+
+    /// Moves to the start of the current hunk, or to the previous hunk when
+    /// already on a hunk header. Returns false if there is none.
+    pub fn prev_hunk(&mut self) -> bool {
+        let Some(current) = self.current_file() else {
+            return false;
+        };
+        let cursor = self.cursor;
+        let target = (0..=current)
+            .rev()
+            .flat_map(|f| self.hunk_rows(f).rev())
+            .find(|&row| row < cursor);
+        target.map(|row| self.cursor = row).is_some()
+    }
+
+    /// Moves to the next file's header.
+    pub fn next_file(&mut self) -> bool {
+        match self.current_file() {
+            Some(f) if f + 1 < self.files.len() => {
+                self.cursor = self.file_starts[f + 1];
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Moves to the current file's header, or to the previous file's header
+    /// when already on a header.
+    pub fn prev_file(&mut self) -> bool {
+        let Some(f) = self.current_file() else {
+            return false;
+        };
+        if self.cursor > self.file_starts[f] {
+            self.cursor = self.file_starts[f];
+            true
+        } else if f > 0 {
+            self.cursor = self.file_starts[f - 1];
+            true
+        } else {
+            false
+        }
+    }
+
     /// Moves the cursor to the header of `file`.
     pub fn jump_to_file(&mut self, file: usize) {
         if file < self.files.len() {
@@ -381,6 +472,89 @@ pub(crate) mod tests {
         assert_eq!(view.locate(view.cursor()), RowAddr::FileHeader { file: 1 });
         view.top();
         assert_eq!(view.cursor(), 0);
+    }
+
+    #[test]
+    fn hunk_navigation_crosses_files() {
+        let mut view = DiffView::new(sample());
+        let h0 = view.row_of(RowAddr::HunkHeader { file: 0, hunk: 0 });
+        let h1 = view.row_of(RowAddr::HunkHeader { file: 0, hunk: 1 });
+        let c0 = view.row_of(RowAddr::HunkHeader { file: 2, hunk: 0 });
+        assert!(view.next_hunk());
+        assert_eq!(view.cursor(), h0);
+        assert!(view.next_hunk());
+        assert_eq!(view.cursor(), h1);
+        // The binary file has no hunks, so the next one is in c.txt.
+        assert!(view.next_hunk());
+        assert_eq!(view.cursor(), c0);
+        assert!(!view.next_hunk());
+        assert_eq!(view.cursor(), c0);
+        // From inside a hunk, `p` goes to its header first.
+        view.set_cursor(h1 + 2);
+        assert!(view.prev_hunk());
+        assert_eq!(view.cursor(), h1);
+        assert!(view.prev_hunk());
+        assert_eq!(view.cursor(), h0);
+        assert!(!view.prev_hunk());
+    }
+
+    #[test]
+    fn file_navigation() {
+        let mut view = DiffView::new(sample());
+        assert!(view.next_file());
+        assert_eq!(view.cursor(), view.file_start(1));
+        assert!(view.next_file());
+        assert!(!view.next_file());
+        view.move_by(1);
+        assert!(view.prev_file());
+        assert_eq!(view.cursor(), view.file_start(2));
+        assert!(view.prev_file());
+        assert_eq!(view.cursor(), view.file_start(1));
+        view.top();
+        assert!(!view.prev_file());
+    }
+
+    #[test]
+    fn collapsing_hides_rows_and_hunks() {
+        let mut view = DiffView::new(sample());
+        let total = view.row_count();
+        let a_rows = view.file_start(1);
+        view.set_cursor(5);
+        view.toggle_collapse(0);
+        assert!(view.is_collapsed(0));
+        assert_eq!(view.cursor(), 0);
+        assert_eq!(view.row_count(), total - a_rows + 1);
+        assert_eq!(view.locate(1), RowAddr::FileHeader { file: 1 });
+        assert!(matches!(
+            view.rows(0..1)[0].content,
+            RowContent::FileHeader {
+                collapsed: true,
+                ..
+            }
+        ));
+        // Hunks of the collapsed file are skipped.
+        assert!(view.next_hunk());
+        assert_eq!(
+            view.locate(view.cursor()),
+            RowAddr::HunkHeader { file: 2, hunk: 0 }
+        );
+        for row in 0..view.row_count() {
+            assert_eq!(view.row_of(view.locate(row)), row);
+        }
+        view.toggle_collapse(0);
+        assert_eq!(view.row_count(), total);
+    }
+
+    #[test]
+    fn collapse_all_toggles() {
+        let mut view = DiffView::new(sample());
+        view.jump_to_file(2);
+        view.toggle_collapse_all();
+        assert_eq!(view.row_count(), 3);
+        assert_eq!(view.cursor(), 2);
+        view.toggle_collapse_all();
+        assert!(!view.is_collapsed(1));
+        assert_eq!(view.cursor(), view.file_start(2));
     }
 
     #[test]

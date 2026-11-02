@@ -15,13 +15,14 @@ use hayami_core::diff::FileDiff;
 use hayami_core::git::load_pr_diff;
 use hayami_core::github::{GithubClient, GithubError, PrDetail, PrList, ReqwestTransport};
 use hayami_core::keymap::{Command, KeyContext, KeyInterpreter, KeyOutcome};
+use hayami_core::palette::Palette;
 use hayami_core::paths::repos_root;
 use hayami_core::pr_list::{PrListRow, PrListState};
 use hayami_core::text_input::TextInput;
 
 use crate::keychain::Keychain;
 use crate::keys::to_press;
-use crate::review::{self, ROW_HEIGHT, ReviewScreen};
+use crate::review::{self, ROW_HEIGHT, ReviewFocus, ReviewScreen};
 use crate::theme;
 
 /// Loading state of something fetched in the background.
@@ -60,6 +61,8 @@ pub struct RootView {
     pr_list: PrListState,
     list_status: Status,
     list_scroll: UniformListScrollHandle,
+    /// Open command palette, if any.
+    palette: Option<Palette>,
     /// Incremented whenever a PR is (re)opened or closed; stale results are dropped.
     generation: u64,
 }
@@ -76,6 +79,7 @@ impl RootView {
             pr_list: PrListState::default(),
             list_status: Status::Loading("Looking for gh…".into()),
             list_scroll: UniformListScrollHandle::new(),
+            palette: None,
             generation: 0,
         };
         view.start_auth(cx);
@@ -297,10 +301,21 @@ impl RootView {
     }
 
     fn key_context(&self) -> KeyContext {
-        match self.screen {
+        if self.palette.is_some() {
+            return KeyContext::TextInput;
+        }
+        self.screen_context()
+    }
+
+    /// Context of the screen under the palette.
+    fn screen_context(&self) -> KeyContext {
+        match &self.screen {
             Screen::TokenEntry { .. } => KeyContext::TextInput,
             Screen::Starting | Screen::PrList => KeyContext::PrList,
-            Screen::Review(_) => KeyContext::Diff,
+            Screen::Review(screen) => match screen.focus {
+                ReviewFocus::Tree => KeyContext::FileTree,
+                ReviewFocus::Diff => KeyContext::Diff,
+            },
         }
     }
 
@@ -311,7 +326,16 @@ impl RootView {
             KeyOutcome::Command(command) => self.run_command(command, window, cx),
             KeyOutcome::Pending => {}
             KeyOutcome::Unhandled => {
-                if let Screen::TokenEntry { input, .. } = &mut self.screen {
+                if let Some(palette) = &mut self.palette {
+                    if press.key == "backspace" {
+                        palette.query.backspace();
+                    } else if press.is_typing()
+                        && let Some(typed) = &event.keystroke.key_char
+                    {
+                        palette.query.insert(typed);
+                    }
+                    palette.refilter();
+                } else if let Screen::TokenEntry { input, .. } = &mut self.screen {
                     if press.key == "backspace" {
                         input.backspace();
                     } else if press.is_typing()
@@ -337,8 +361,96 @@ impl RootView {
     }
 
     fn run_command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(palette) = &mut self.palette {
+            match command {
+                Command::MoveDown => palette.move_by(1),
+                Command::MoveUp => palette.move_by(-1),
+                Command::Cancel | Command::CommandPalette => self.palette = None,
+                Command::Confirm => {
+                    let selected = palette.selected_command();
+                    self.palette = None;
+                    if let Some(selected) = selected {
+                        self.run_screen_command(selected, window, cx);
+                    }
+                }
+                Command::Paste => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                        palette.query.insert(text.trim());
+                        palette.refilter();
+                    }
+                }
+                Command::Quit => cx.quit(),
+                _ => {}
+            }
+            return;
+        }
+        self.run_screen_command(command, window, cx);
+    }
+
+    fn run_screen_command(
+        &mut self,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let half = Self::half_page(window);
         match command {
+            Command::CommandPalette => {
+                if !matches!(self.screen, Screen::TokenEntry { .. }) {
+                    self.palette = Some(Palette::new());
+                }
+            }
+            Command::FocusFileTree | Command::FocusDiff => {
+                if let Some(screen) = self.review_mut()
+                    && screen.view.is_some()
+                {
+                    screen.focus = if command == Command::FocusFileTree {
+                        ReviewFocus::Tree
+                    } else {
+                        ReviewFocus::Diff
+                    };
+                    screen.sync_after_move();
+                }
+            }
+            Command::NextHunk
+            | Command::PrevHunk
+            | Command::NextFile
+            | Command::PrevFile
+            | Command::ToggleCollapse
+            | Command::ToggleCollapseAll => {
+                if let Some(screen) = self.review_mut() {
+                    let tree_file = screen.tree.selected_file();
+                    let tree_focused = screen.focus == ReviewFocus::Tree;
+                    if let Some(view) = &mut screen.view {
+                        match command {
+                            Command::NextHunk => {
+                                view.next_hunk();
+                            }
+                            Command::PrevHunk => {
+                                view.prev_hunk();
+                            }
+                            Command::NextFile => {
+                                view.next_file();
+                            }
+                            Command::PrevFile => {
+                                view.prev_file();
+                            }
+                            Command::ToggleCollapse => {
+                                let file = if tree_focused {
+                                    Some(tree_file)
+                                } else {
+                                    view.current_file()
+                                };
+                                if let Some(file) = file {
+                                    view.toggle_collapse(file);
+                                }
+                            }
+                            _ => view.toggle_collapse_all(),
+                        }
+                        screen.sync_after_move();
+                    }
+                }
+            }
             Command::Quit => cx.quit(),
             Command::Reload => match &self.screen {
                 Screen::Review(_) => self.open_selected_pr(cx),
@@ -346,6 +458,7 @@ impl RootView {
             },
             Command::Back => {
                 if matches!(self.screen, Screen::Review(_)) {
+                    self.keys.reset();
                     self.generation += 1;
                     self.screen = Screen::PrList;
                     self.scroll_list_to_selection();
@@ -382,6 +495,16 @@ impl RootView {
                         _ => list.select_last(),
                     }
                     self.scroll_list_to_selection();
+                }
+                Screen::Review(screen) if screen.focus == ReviewFocus::Tree => {
+                    screen.move_tree_selection(|tree| match command {
+                        Command::MoveDown => tree.move_by(1),
+                        Command::MoveUp => tree.move_by(-1),
+                        Command::HalfPageDown => tree.move_by(half),
+                        Command::HalfPageUp => tree.move_by(-half),
+                        Command::Top => tree.select_file(0),
+                        _ => tree.select_last(),
+                    });
                 }
                 Screen::Review(screen) => {
                     if let Some(view) = &mut screen.view {
@@ -537,11 +660,13 @@ impl Render for RootView {
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
+            .relative()
             .size_full()
             .bg(theme::bg())
             .text_color(theme::text())
             .font_family("Menlo")
             .text_size(px(13.0))
             .child(content)
+            .children(self.palette.as_ref().map(crate::palette_view::render))
     }
 }

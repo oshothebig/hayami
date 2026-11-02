@@ -17,7 +17,15 @@ use crate::theme;
 pub const ROW_HEIGHT: f32 = 20.0;
 const TREE_WIDTH: f32 = 300.0;
 
+/// Which pane of the review screen has the keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewFocus {
+    Tree,
+    Diff,
+}
+
 pub struct ReviewScreen {
+    pub focus: ReviewFocus,
     pub title: String,
     pub detail: Option<PrDetail>,
     pub status: Status,
@@ -32,6 +40,7 @@ pub struct ReviewScreen {
 impl ReviewScreen {
     pub fn new(title: String) -> Self {
         Self {
+            focus: ReviewFocus::Diff,
             title,
             detail: None,
             status: Status::Loading("Loading pull request…".into()),
@@ -60,6 +69,16 @@ impl ReviewScreen {
             self.tree_scroll
                 .scroll_to_item(self.tree.selected_row(), ScrollStrategy::Top);
         }
+    }
+
+    /// Moves the tree selection and shows that file in the diff.
+    pub fn move_tree_selection(&mut self, apply: impl FnOnce(&mut FileTree)) {
+        apply(&mut self.tree);
+        let file = self.tree.selected_file();
+        if let Some(view) = &mut self.view {
+            view.jump_to_file(file);
+        }
+        self.sync_after_move();
     }
 
     /// Current loading message, preferring live progress from the loader.
@@ -104,9 +123,14 @@ pub fn render(screen: &ReviewScreen, cx: &mut Context<RootView>) -> Div {
         .child(crate::root::title_bar(&header))
         .children(crate::root::render_status(&screen.status_message()))
         .child(body)
-        .child(crate::root::hint_bar(
-            "j/k move · ⌃d/⌃u half page · g g / G top/bottom · ⌘[ back · ⌘R reload",
-        ))
+        .child(crate::root::hint_bar(match screen.focus {
+            ReviewFocus::Diff => {
+                "j/k move · n/p hunk · ]/[ file · o collapse · ⌘⇧E tree · ⌘⇧P commands · ⌘[ back"
+            }
+            ReviewFocus::Tree => {
+                "j/k select file · ↩/esc focus diff · o collapse · ⌘⇧P commands · ⌘[ back"
+            }
+        }))
 }
 
 fn render_tree(screen: &ReviewScreen, cx: &mut Context<RootView>) -> Stateful<Div> {
@@ -141,7 +165,11 @@ fn render_tree(screen: &ReviewScreen, cx: &mut Context<RootView>) -> Stateful<Di
         .flex_shrink_0()
         .bg(theme::panel_bg())
         .border_r_1()
-        .border_color(theme::border())
+        .border_color(if screen.focus == ReviewFocus::Tree {
+            theme::accent()
+        } else {
+            theme::border()
+        })
         .child(list)
 }
 

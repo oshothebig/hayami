@@ -2,6 +2,7 @@
 
 mod keychain;
 mod keys;
+mod palette_view;
 mod review;
 mod root;
 mod theme;

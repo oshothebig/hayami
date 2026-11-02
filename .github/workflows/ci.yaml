@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+    - mvp
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux:
+    name: Linux (core)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2
+    - name: Format
+      run: cargo fmt --all --check
+    - name: Clippy (hayami-core)
+      run: cargo clippy -p hayami-core --all-targets --locked -- -D warnings
+    - name: Test (hayami-core)
+      run: cargo test -p hayami-core --locked
+    - name: Install cargo-audit
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-audit
+    - name: Audit
+      run: cargo audit
+
+  macos:
+    name: macOS (workspace)
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
+    - name: Clippy (workspace)
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
+    - name: Test (workspace)
+      run: cargo test --workspace --locked
+    - name: Release build
+      run: cargo build --workspace --release --locked

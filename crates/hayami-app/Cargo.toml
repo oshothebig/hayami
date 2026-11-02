@@ -1,0 +1,21 @@
+[package]
+name = "hayami-app"
+description = "macOS desktop app of hayami built on GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "hayami"
+path = "src/main.rs"
+
+[dependencies]
+hayami-core.workspace = true
+# GPUI has breaking changes between releases; keep the version pinned.
+# Follow-up target is documented in README.md.
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
+
+[lints]
+workspace = true

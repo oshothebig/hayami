@@ -2,6 +2,7 @@
 
 mod keychain;
 mod keys;
+mod review;
 mod root;
 mod theme;
 

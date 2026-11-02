@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+gix = { version = "0.90", default-features = false, features = ["sha1", "blob-diff", "revision", "blocking-http-transport-reqwest-rust-tls", "max-performance"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }

@@ -1,29 +1,32 @@
 //! Root view: owns the screens and routes key events through the core keymap.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    Context, FocusHandle, KeyDownEvent, ScrollStrategy, SharedString, UniformListScrollHandle,
+    Context, Div, FocusHandle, KeyDownEvent, ScrollStrategy, SharedString, UniformListScrollHandle,
     Window, div, prelude::*, px, uniform_list,
 };
 use hayami_core::auth::{
-    AuthError, AuthMethod, CredentialStore, GhCli, StoredToken, Token, TokenProvider,
+    AuthError, AuthMethod, CredentialStore, GhCli, StoredToken, Token, TokenProvider, TokenSource,
     choose_auth_method, login_shell_path,
 };
+use hayami_core::diff::FileDiff;
+use hayami_core::git::load_pr_diff;
 use hayami_core::github::{GithubClient, GithubError, PrDetail, PrList, ReqwestTransport};
 use hayami_core::keymap::{Command, KeyContext, KeyInterpreter, KeyOutcome};
+use hayami_core::paths::repos_root;
 use hayami_core::pr_list::{PrListRow, PrListState};
 use hayami_core::text_input::TextInput;
 
 use crate::keychain::Keychain;
 use crate::keys::to_press;
+use crate::review::{self, ROW_HEIGHT, ReviewScreen};
 use crate::theme;
-
-const ROW_HEIGHT: f32 = 24.0;
 
 /// Loading state of something fetched in the background.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Status {
+pub enum Status {
     Idle,
     Loading(String),
     Failed(String),
@@ -39,14 +42,14 @@ enum Screen {
     },
     /// PR list.
     PrList,
-    /// One PR.
-    Pr(Box<PrScreen>),
+    /// Reviewing one PR.
+    Review(Box<ReviewScreen>),
 }
 
-struct PrScreen {
-    title: String,
-    detail: Option<PrDetail>,
-    status: Status,
+/// Failure while opening a PR.
+enum OpenError {
+    Github(GithubError),
+    Other(String),
 }
 
 pub struct RootView {
@@ -57,6 +60,8 @@ pub struct RootView {
     pr_list: PrListState,
     list_status: Status,
     list_scroll: UniformListScrollHandle,
+    /// Incremented whenever a PR is (re)opened or closed; stale results are dropped.
+    generation: u64,
 }
 
 impl RootView {
@@ -71,9 +76,24 @@ impl RootView {
             pr_list: PrListState::default(),
             list_status: Status::Loading("Looking for gh…".into()),
             list_scroll: UniformListScrollHandle::new(),
+            generation: 0,
         };
         view.start_auth(cx);
         view
+    }
+
+    pub fn review(&self) -> Option<&ReviewScreen> {
+        match &self.screen {
+            Screen::Review(screen) => Some(screen),
+            _ => None,
+        }
+    }
+
+    fn review_mut(&mut self) -> Option<&mut ReviewScreen> {
+        match &mut self.screen {
+            Screen::Review(screen) => Some(screen),
+            _ => None,
+        }
     }
 
     /// Runs `job` on a background thread and applies `done` on the UI thread.
@@ -123,7 +143,7 @@ impl RootView {
         );
     }
 
-    fn set_token_source(&mut self, source: Box<dyn hayami_core::auth::TokenSource>) {
+    fn set_token_source(&mut self, source: Box<dyn TokenSource>) {
         let tokens = Arc::new(TokenProvider::new(source));
         match ReqwestTransport::new() {
             Ok(transport) => {
@@ -142,8 +162,8 @@ impl RootView {
         };
     }
 
-    /// Shows a GitHub error, switching to token entry when the manual token
-    /// is missing or was rejected.
+    /// Converts a GitHub error into a status, switching to token entry when
+    /// the manual token is missing or was rejected.
     fn handle_github_error(&mut self, error: GithubError) -> Status {
         match error {
             GithubError::Auth(AuthError::ManualTokenRejected | AuthError::NoStoredToken) => {
@@ -179,29 +199,85 @@ impl RootView {
             return;
         };
         let pr = summary.pr.clone();
-        self.screen = Screen::Pr(Box::new(PrScreen {
-            title: format!("{} {}", pr, summary.title),
-            detail: None,
-            status: Status::Loading("Loading pull request…".into()),
-        }));
+        let screen = ReviewScreen::new(format!("{} {}", pr, summary.title));
+        let progress = screen.progress.clone();
+        self.screen = Screen::Review(Box::new(screen));
+        self.generation += 1;
+        let generation = self.generation;
+
+        let Some(root) = repos_root() else {
+            if let Some(screen) = self.review_mut() {
+                screen.status = Status::Failed("Cannot determine the cache directory".into());
+            }
+            return;
+        };
         Self::background(
             cx,
-            move || client.pull_request(&pr),
-            |this, result, _cx| {
+            move || -> Result<(PrDetail, Vec<FileDiff>), OpenError> {
+                let report = |message: &str| {
+                    if let Ok(mut p) = progress.lock() {
+                        *p = message.to_owned();
+                    }
+                };
+                report("Loading pull request metadata…");
+                let detail = client.pull_request(&pr).map_err(OpenError::Github)?;
+                let diff = load_pr_diff(&detail, &root, Some(client.tokens()), &report)
+                    .map_err(|e| OpenError::Other(e.to_string()))?;
+                Ok((detail, diff.files))
+            },
+            move |this, result, _cx| {
+                if this.generation != generation {
+                    return;
+                }
                 let status = match result {
-                    Ok(detail) => {
-                        if let Screen::Pr(screen) = &mut this.screen {
+                    Ok((detail, files)) => {
+                        if let Some(screen) = this.review_mut() {
                             screen.detail = Some(detail);
+                            screen.set_files(files);
+                            screen.sync_after_move();
                         }
                         Status::Idle
                     }
-                    Err(e) => this.handle_github_error(e),
+                    Err(OpenError::Github(e)) => this.handle_github_error(e),
+                    Err(OpenError::Other(message)) => Status::Failed(message),
                 };
-                if let Screen::Pr(screen) = &mut this.screen {
+                if let Some(screen) = this.review_mut() {
                     screen.status = status;
                 }
             },
         );
+        Self::poll_progress(generation, cx);
+    }
+
+    /// Re-renders periodically while a PR is loading so progress is visible.
+    fn poll_progress(generation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let loading = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        this.generation == generation
+                            && matches!(this.review().map(|s| &s.status), Some(Status::Loading(_)))
+                    })
+                    .unwrap_or(false);
+                if !loading {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub fn jump_to_file(&mut self, file: usize) {
+        if let Some(screen) = self.review_mut()
+            && let Some(view) = &mut screen.view
+        {
+            view.jump_to_file(file);
+            screen.sync_after_move();
+        }
     }
 
     fn submit_token(&mut self, cx: &mut Context<Self>) {
@@ -224,7 +300,7 @@ impl RootView {
         match self.screen {
             Screen::TokenEntry { .. } => KeyContext::TextInput,
             Screen::Starting | Screen::PrList => KeyContext::PrList,
-            Screen::Pr(_) => KeyContext::FileTree,
+            Screen::Review(_) => KeyContext::Diff,
         }
     }
 
@@ -255,20 +331,22 @@ impl RootView {
             .scroll_to_item(self.pr_list.selected_row(), ScrollStrategy::Center);
     }
 
-    fn half_page(&self, window: &Window) -> isize {
+    fn half_page(window: &Window) -> isize {
         let rows = (window.viewport_size().height / px(ROW_HEIGHT)).floor() as isize;
         (rows / 2).max(1)
     }
 
-    pub fn run_command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        let half = Self::half_page(window);
         match command {
             Command::Quit => cx.quit(),
             Command::Reload => match &self.screen {
-                Screen::Pr(_) => self.open_selected_pr(cx),
+                Screen::Review(_) => self.open_selected_pr(cx),
                 _ => self.reload_list(cx),
             },
             Command::Back => {
-                if matches!(self.screen, Screen::Pr(_)) {
+                if matches!(self.screen, Screen::Review(_)) {
+                    self.generation += 1;
                     self.screen = Screen::PrList;
                     self.scroll_list_to_selection();
                 }
@@ -292,44 +370,38 @@ impl RootView {
             | Command::HalfPageDown
             | Command::HalfPageUp
             | Command::Top
-            | Command::Bottom => {
-                if matches!(self.screen, Screen::PrList) {
-                    let half = self.half_page(window);
+            | Command::Bottom => match &mut self.screen {
+                Screen::PrList => {
+                    let list = &mut self.pr_list;
                     match command {
-                        Command::MoveDown => self.pr_list.move_by(1),
-                        Command::MoveUp => self.pr_list.move_by(-1),
-                        Command::HalfPageDown => self.pr_list.move_by(half),
-                        Command::HalfPageUp => self.pr_list.move_by(-half),
-                        Command::Top => self.pr_list.select_first(),
-                        _ => self.pr_list.select_last(),
+                        Command::MoveDown => list.move_by(1),
+                        Command::MoveUp => list.move_by(-1),
+                        Command::HalfPageDown => list.move_by(half),
+                        Command::HalfPageUp => list.move_by(-half),
+                        Command::Top => list.select_first(),
+                        _ => list.select_last(),
                     }
                     self.scroll_list_to_selection();
                 }
-            }
+                Screen::Review(screen) => {
+                    if let Some(view) = &mut screen.view {
+                        match command {
+                            Command::MoveDown => view.move_by(1),
+                            Command::MoveUp => view.move_by(-1),
+                            Command::HalfPageDown => view.move_by(half),
+                            Command::HalfPageUp => view.move_by(-half),
+                            Command::Top => view.top(),
+                            _ => view.bottom(),
+                        }
+                        screen.sync_after_move();
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
-    fn render_status(status: &Status) -> Option<gpui::Div> {
-        match status {
-            Status::Idle => None,
-            Status::Loading(message) => Some(
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_color(theme::muted())
-                    .child(message.clone()),
-            ),
-            Status::Failed(message) => Some(
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_color(theme::error())
-                    .child(message.clone()),
-            ),
-        }
-    }
-
-    fn render_pr_list(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_pr_list(&self, cx: &mut Context<Self>) -> Div {
         let rows = self.pr_list.rows().len();
         let list = uniform_list(
             "pr-list",
@@ -348,43 +420,14 @@ impl RootView {
             .flex_col()
             .size_full()
             .child(title_bar("Pull requests"))
-            .children(Self::render_status(&self.list_status))
+            .children(render_status(&self.list_status))
             .child(list)
             .child(hint_bar(
                 "j/k move · ↩ open · g g / G top/bottom · ⌘R reload · ⌘Q quit",
             ))
     }
 
-    fn render_pr_screen(screen: &PrScreen) -> gpui::Div {
-        let mut body = div().flex().flex_col().flex_grow().px_3().py_2().gap_1();
-        if let Some(detail) = &screen.detail {
-            body = body
-                .child(format!(
-                    "{} ← {} by {}",
-                    detail.base_ref_name, detail.head_ref_name, detail.author
-                ))
-                .child(div().text_color(theme::muted()).child(format!(
-                    "review: {}",
-                    detail.review_decision.as_deref().unwrap_or("none")
-                )));
-            for file in &detail.files {
-                body = body.child(format!(
-                    "{:<9} +{:<4} -{:<4} {}",
-                    file.change_type, file.additions, file.deletions, file.path
-                ));
-            }
-        }
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(title_bar(&screen.title))
-            .children(Self::render_status(&screen.status))
-            .child(body)
-            .child(hint_bar("⌘[ back · ⌘R reload"))
-    }
-
-    fn render_token_entry(input: &TextInput, error: &Option<String>) -> gpui::Div {
+    fn render_token_entry(input: &TextInput, error: &Option<String>) -> Div {
         div()
             .flex()
             .flex_col()
@@ -416,17 +459,28 @@ impl RootView {
     }
 }
 
-fn title_bar(title: &str) -> gpui::Div {
+pub fn render_status(status: &Status) -> Option<Div> {
+    let (color, message) = match status {
+        Status::Idle => return None,
+        Status::Loading(message) => (theme::muted(), message),
+        Status::Failed(message) => (theme::error(), message),
+    };
+    Some(div().px_3().py_1().text_color(color).child(message.clone()))
+}
+
+pub fn title_bar(title: &str) -> Div {
     div()
         .px_3()
         .py_2()
         .bg(theme::header_bg())
         .border_b_1()
         .border_color(theme::border())
+        .whitespace_nowrap()
+        .overflow_hidden()
         .child(title.to_owned())
 }
 
-fn hint_bar(text: &'static str) -> gpui::Div {
+pub fn hint_bar(text: impl Into<SharedString>) -> Div {
     div()
         .px_3()
         .py_1()
@@ -434,11 +488,18 @@ fn hint_bar(text: &'static str) -> gpui::Div {
         .border_color(theme::border())
         .text_color(theme::muted())
         .text_sm()
-        .child(text)
+        .child(text.into())
 }
 
-fn render_pr_row(ix: usize, row: &PrListRow<'_>) -> gpui::Stateful<gpui::Div> {
-    let base = div().id(ix).h(px(ROW_HEIGHT)).px_3().flex().items_center();
+fn render_pr_row(ix: usize, row: &PrListRow<'_>) -> gpui::Stateful<Div> {
+    let base = div()
+        .id(ix)
+        .h(px(24.0))
+        .px_3()
+        .flex()
+        .items_center()
+        .whitespace_nowrap()
+        .overflow_hidden();
     match row {
         PrListRow::Header(group, count) => base
             .bg(theme::header_bg())
@@ -449,7 +510,7 @@ fn render_pr_row(ix: usize, row: &PrListRow<'_>) -> gpui::Stateful<gpui::Div> {
             let draft = if pr.is_draft { " [draft]" } else { "" };
             base.when(*selected, |d| d.bg(theme::selection()))
                 .gap_2()
-                .child(div().text_color(theme::muted()).child(format!("{}", pr.pr)))
+                .child(div().text_color(theme::muted()).child(pr.pr.to_string()))
                 .child(format!("{}{draft}", pr.title))
                 .child(div().text_color(theme::muted()).child(format!(
                     "@{} +{} -{}",
@@ -471,7 +532,7 @@ impl Render for RootView {
                 .child("Starting…"),
             Screen::TokenEntry { input, error } => Self::render_token_entry(input, error),
             Screen::PrList => self.render_pr_list(cx),
-            Screen::Pr(screen) => Self::render_pr_screen(screen),
+            Screen::Review(screen) => review::render(screen, cx),
         };
         div()
             .track_focus(&self.focus)

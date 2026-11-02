@@ -29,3 +29,18 @@ pub fn selection() -> Rgba {
 pub fn header_bg() -> Rgba {
     rgb(0x2d2d30)
 }
+pub fn hunk_bg() -> Rgba {
+    rgb(0x1f2a3a)
+}
+pub fn added_bg() -> Rgba {
+    rgb(0x1f3a26)
+}
+pub fn removed_bg() -> Rgba {
+    rgb(0x43242a)
+}
+pub fn added_fg() -> Rgba {
+    rgb(0x73c991)
+}
+pub fn removed_fg() -> Rgba {
+    rgb(0xf14c4c)
+}

@@ -317,6 +317,22 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A child forked by another test thread while the file was open for
+        // writing keeps that descriptor until it execs, and executing the
+        // script meanwhile fails with ETXTBSY. Wait until it can be run.
+        for _ in 0..200 {
+            match Command::new(&path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                _ => break,
+            }
+        }
         path
     }
 

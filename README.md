@@ -12,7 +12,7 @@ hayami runs on macOS only (GPUI renders with Metal).
 ## Requirements
 
 - Rust stable (edition 2024)
-- macOS with Xcode command line tools (the GPUI build compiles Metal shaders)
+- macOS with the Xcode Command Line Tools (`xcode-select --install`). Xcode itself is not required: GPUI is built with its `runtime_shaders` feature, which compiles the Metal shaders at startup instead of at build time with the `metal` compiler that only ships with Xcode
 - [`just`](https://github.com/casey/just) as the task runner
 - [`gh`](https://cli.github.com/) logged in with `gh auth login` (used to obtain a token)
 - `cargo-audit` for `just audit`

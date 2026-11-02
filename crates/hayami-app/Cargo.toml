@@ -15,7 +15,9 @@ path = "src/main.rs"
 hayami-core.workspace = true
 # GPUI has breaking changes between releases; keep the version pinned.
 # Follow-up target is documented in README.md.
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
+# `runtime_shaders` compiles the Metal shaders at startup through the Metal
+# framework, so building does not need the `metal` compiler from Xcode.
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "runtime_shaders"] }
 
 [lints]
 workspace = true

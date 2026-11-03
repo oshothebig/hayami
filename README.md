@@ -27,3 +27,11 @@ hayami aims to provide a fast, native environment for reviewing GitHub pull requ
 ## License
 
 See [LICENSE](LICENSE).
+
+## Development
+
+Validate the Claude Code settings (`.claude/settings.json`) against their JSON schema in a container (requires [just](https://github.com/casey/just) and Docker):
+
+```sh
+just validate-claude
+```

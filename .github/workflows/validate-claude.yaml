@@ -1,0 +1,28 @@
+name: Validate Claude Code settings
+
+on:
+  pull_request:
+    paths:
+    - ".claude/**"
+    - ".github/workflows/validate-claude.yaml"
+    - "tools/claude/**"
+    - "justfile"
+  push:
+    branches: [main]
+    paths:
+    - ".claude/**"
+    - ".github/workflows/validate-claude.yaml"
+    - "tools/claude/**"
+    - "justfile"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - uses: extractions/setup-just@v4.0.0
+    - name: Validate .claude/settings.json against its JSON schema
+      run: just validate-claude

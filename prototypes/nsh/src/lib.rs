@@ -29,10 +29,11 @@ fn native(registry: &mut Registry) {
 
 /// The patch to review: the file `HAYAMI_DIFF` names, else the shared fixture.
 fn load_patch() -> String {
-    std::env::var("HAYAMI_DIFF")
-        .ok()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_else(|| FIXTURE.to_owned())
+    match std::env::var_os("HAYAMI_DIFF") {
+        Some(path) => std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read HAYAMI_DIFF {}: {e}", path.display())),
+        None => FIXTURE.to_owned(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

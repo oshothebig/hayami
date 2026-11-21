@@ -1,0 +1,7 @@
+{
+  "name": "Hayami Review",
+  "id": "dev.hayami.prototype.nsh",
+  "appearance": "system",
+  "rust": ".",
+  "root": "App"
+}

@@ -5,6 +5,7 @@ on:
     paths:
     - ".claude/**"
     - ".github/workflows/validate-claude.yaml"
+    - ".github/workflows/actions.lock"
     - "tools/claude/**"
     - "justfile"
     - "mise.toml"
@@ -13,6 +14,7 @@ on:
     paths:
     - ".claude/**"
     - ".github/workflows/validate-claude.yaml"
+    - ".github/workflows/actions.lock"
     - "tools/claude/**"
     - "justfile"
     - "mise.toml"

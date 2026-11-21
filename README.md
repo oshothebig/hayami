@@ -1,6 +1,6 @@
 # hayami
 
-A GitHub pull request review tool built on GPUI.
+A GitHub pull request review tool.
 
 ## Status
 

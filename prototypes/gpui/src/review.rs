@@ -178,8 +178,16 @@ impl ReviewModel {
         if hunks.is_empty() {
             return None;
         }
-        let index = hunks.iter().position(|h| *h == current).unwrap_or(0);
-        Some(hunks[index.saturating_add_signed(direction).min(hunks.len() - 1)])
+        if let Some(index) = hunks.iter().position(|h| *h == current) {
+            return Some(hunks[index.saturating_add_signed(direction).min(hunks.len() - 1)]);
+        }
+        if direction > 0 {
+            hunks.into_iter().find(|(f, _)| *f > current.0)
+        } else if direction < 0 {
+            hunks.into_iter().rev().find(|(f, _)| *f < current.0)
+        } else {
+            None
+        }
     }
 
     pub fn toggle(&mut self, file: usize, hunk: usize) {
@@ -404,6 +412,33 @@ mod tests {
         m.cursor = None;
         m.origin = None;
         assert_eq!(m.active_hunk(visible), visible);
+    }
+    #[test]
+    fn navigates_forward_from_hunkless_file() {
+        let m = hunkless_model();
+        assert_eq!(m.navigate_hunk((1, 0), 1), Some((2, 0)));
+        assert_eq!(m.navigate_hunk((3, 0), 1), None);
+    }
+    #[test]
+    fn navigates_backward_from_hunkless_file() {
+        let m = hunkless_model();
+        assert_eq!(m.navigate_hunk((1, 0), -1), Some((0, 1)));
+        assert_eq!(m.navigate_hunk((3, 0), -1), Some((2, 0)));
+        let metadata_only = ReviewModel::new(
+            crate::diff::parse(
+                "diff --git a/a.bin b/a.bin\nBinary files a/a.bin and b/a.bin differ\n",
+            )
+            .unwrap(),
+        );
+        assert_eq!(metadata_only.navigate_hunk((0, 0), 1), None);
+        assert_eq!(metadata_only.navigate_hunk((0, 0), -1), None);
+        let mut leading = hunkless_model();
+        leading.files[0].hunks.clear();
+        assert_eq!(leading.navigate_hunk((0, 0), -1), None);
+        assert_eq!(leading.navigate_hunk((0, 0), 1), Some((2, 0)));
+    }
+    fn hunkless_model() -> ReviewModel {
+        ReviewModel::new(crate::diff::parse("diff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-old\n+new\n@@ -10 +10 @@\n-before\n+after\ndiff --git a/b.bin b/b.bin\nBinary files a/b.bin and b/b.bin differ\ndiff --git a/c.rs b/c.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/d.rs b/d.rs\nold mode 100644\nnew mode 100755\n").unwrap())
     }
     #[test]
     fn navigation_clamps_and_handles_empty() {

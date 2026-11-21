@@ -108,7 +108,7 @@ impl Review {
     }
 
     fn open(&mut self, range: LineRange) {
-        if self.comments.composing == Some(range) {
+        if self.comments.composing.is_some() {
             return;
         }
         self.comments.composing = Some(range);
@@ -268,11 +268,6 @@ fn view(s: &Review, cx: &mut Cx<Review>) -> El {
     let diff = DiffView::new(|s: &Review| &s.diff, |s: &mut Review| &mut s.diff)
         .annotation(move |s, a| annotation(s, a, &ka))
         .on_comment(|s, range, _| s.open(range))
-        .on_select(|s, range, _| {
-            if let Some(range) = range {
-                s.open(range);
-            }
-        })
         .on_visible_file(|s, file| {
             s.pending_sidebar = Some(file);
             if file != s.nav_file {
@@ -357,6 +352,7 @@ fn poll(s: &mut Review, _: f64, tx: &mut Tx) -> bool {
 fn composer_scene(s: &mut Review) {
     if let Some(mut range) = s.first_line() {
         range.end.line += 2;
+        s.diff.set_selection(Some(range));
         s.open(range);
         s.draft = TextEdit::new("日本語のコメント");
         s.draft.focused = true;

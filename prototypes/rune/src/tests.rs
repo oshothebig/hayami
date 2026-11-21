@@ -60,6 +60,53 @@ fn parsing_handles_empty_invalid_and_repeated_patches() {
 }
 
 #[test]
+fn selection_is_separate_from_composing_and_preserves_an_existing_draft() {
+    let mut rt = Runtime::new(
+        load(PATCH, 1).unwrap(),
+        view,
+        (1400.0, 900.0),
+        Env::new(true, 1.0),
+    );
+    rt.on_key = Some(on_key);
+    rt.poll = Some(poll);
+    rt.frame(0.0);
+    let click_number = |rt: &mut Runtime<Review>, index| {
+        let r = rt
+            .elements()
+            .into_iter()
+            .filter(|e| e.key.as_deref() == Some("nn"))
+            .nth(index)
+            .unwrap()
+            .rect;
+        let (x, y) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    };
+    click_number(&mut rt, 0);
+    let anchor = rt.state.diff.selection().unwrap();
+    assert!(rt.state.comments.composing.is_none());
+    assert!(
+        !rt.elements()
+            .iter()
+            .any(|e| e.label.as_deref() == Some("Review comment"))
+    );
+    key(&mut rt, Key::Text("c".into()), Mods::default());
+    assert_eq!(rt.state.comments.composing, Some(anchor));
+    rt.ime(Ime::Commit("Keep this draft".into()));
+    rt.frame(0.0);
+    click_number(&mut rt, 1);
+    let selected = rt.state.diff.selection().unwrap();
+    assert_ne!(selected, anchor);
+    assert_eq!(rt.state.comments.composing, Some(anchor));
+    assert_eq!(rt.state.draft.text, "Keep this draft");
+    rt.state.open(selected);
+    assert_eq!(rt.state.comments.composing, Some(anchor));
+    assert_eq!(rt.state.draft.text, "Keep this draft");
+    assert!(rt.state.comments.posted.is_empty());
+}
+
+#[test]
 fn keyboard_composition_posting_and_cancel_use_real_runtime() {
     let mut rt = runtime();
     key(&mut rt, Key::Text("c".into()), Mods::default());

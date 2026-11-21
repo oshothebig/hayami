@@ -33,8 +33,9 @@ Headless output uses the same renderer with Mesa's CPU Vulkan adapter. It needs
 no display server. Debug builds include Rune's headless tooling; release builds
 need `--features rune/tooling`.
 
-Select gutter lines (Shift/drag for ranges), or click the hover `+`, to compose
-inline. `c`/Enter opens a comment on the selection or keyboard-tracked hunk.
+Select gutter lines (Shift/drag for ranges), then press `c`/Enter to compose
+inline on the selection or keyboard-tracked hunk. The hover `+` opens a composer
+directly. Reselecting keeps an existing composer and its draft at the original anchor.
 Ctrl/Cmd+Enter posts; Escape cancels. Composer typing does not navigate the diff.
 `j`/`k` navigate hunks; `]`/`[` navigate files. Comments are lost on exit.
 

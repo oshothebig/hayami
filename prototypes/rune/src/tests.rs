@@ -60,6 +60,24 @@ fn parsing_handles_empty_invalid_and_repeated_patches() {
 }
 
 #[test]
+fn repeated_paths_strip_only_the_final_extension() {
+    for (path, stem, extension) in [
+        ("foo.rs.rs", "foo.rs", ".rs"),
+        ("dir.rs/foo", "dir.rs/foo", ""),
+        (".gitignore", ".gitignore", ""),
+    ] {
+        let patch = PATCH.replace("a.rs", path);
+        let review = load(&patch, 2).unwrap();
+        for copy in 0..2 {
+            let expected = format!("{stem}.repeat-{}{extension}", copy + 1);
+            let file = &review.diff.files()[copy * 2];
+            assert_eq!(file.old_path.as_deref(), Some(expected.as_str()));
+            assert_eq!(file.new_path.as_deref(), Some(expected.as_str()));
+        }
+    }
+}
+
+#[test]
 fn selection_is_separate_from_composing_and_preserves_an_existing_draft() {
     let mut rt = Runtime::new(
         load(PATCH, 1).unwrap(),

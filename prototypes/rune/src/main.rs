@@ -52,7 +52,7 @@ fn load(patch: &str, repeat: usize) -> Result<Review, String> {
                     };
                     *path = format!(
                         "{}.repeat-{}{suffix}",
-                        path.trim_end_matches(&suffix),
+                        path.strip_suffix(&suffix).unwrap_or(path),
                         copy + 1
                     );
                 }

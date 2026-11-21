@@ -123,10 +123,14 @@ impl PatchIndex {
         }
     }
 
-    /// `path:L12-L14`, or `path:L12` for one line.
+    /// `path:L12-L14`, `path:L12` for one line, or `a:L40-b:L3` across files.
     pub fn describe(&self, side: DiffSide, start: u32, end: u32) -> String {
         let prefix = if side == DiffSide::Old { "old " } else { "" };
         match (self.locate(side, start), self.locate(side, end)) {
+            (Some((f, a)), Some((g, b))) if f != g => {
+                let (from, to) = (&self.files[f].path, &self.files[g].path);
+                format!("{prefix}{from}:L{a}-{to}:L{b}")
+            }
             (Some((file, a)), Some((_, b))) if a != b => {
                 format!("{prefix}{}:L{a}-L{b}", self.files[file].path)
             }
@@ -179,6 +183,7 @@ diff --git a/b.rs b/b.rs
         assert_eq!(index.joined(DiffSide::New, 2, 0), 4);
         assert_eq!(index.describe(DiffSide::New, 1, 2), "a.rs:L11-L12");
         assert_eq!(index.describe(DiffSide::Old, 3, 3), "old b.rs:L1");
+        assert_eq!(index.describe(DiffSide::New, 1, 4), "a.rs:L11-b.rs:L1");
     }
 
     #[test]

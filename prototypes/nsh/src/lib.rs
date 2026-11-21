@@ -30,8 +30,11 @@ fn native(registry: &mut Registry) {
 /// The patch to review: the file `HAYAMI_DIFF` names, else the shared fixture.
 fn load_patch() -> String {
     match std::env::var_os("HAYAMI_DIFF") {
-        Some(path) => std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read HAYAMI_DIFF {}: {e}", path.display())),
+        Some(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            // A panic here only kills the UI callback and leaves an empty window.
+            eprintln!("cannot read HAYAMI_DIFF {}: {e}", path.display());
+            std::process::exit(1)
+        }),
         None => FIXTURE.to_owned(),
     }
 }
@@ -137,6 +140,7 @@ fn review(patch: String) -> impl IntoElement {
             }
             draft.set(Some(range));
             draft_text.set(String::new());
+            composing.set(String::new());
             status.set(format!(
                 "Commenting on {}",
                 index.describe(range.side, range.start, range.end)
@@ -147,6 +151,7 @@ fn review(patch: String) -> impl IntoElement {
         if draft.get_untracked().is_some() {
             draft.set(None);
             draft_text.set(String::new());
+            composing.set(String::new());
             status.set("Comment canceled".to_owned());
         }
     };
@@ -173,6 +178,7 @@ fn review(patch: String) -> impl IntoElement {
             });
             draft.set(None);
             draft_text.set(String::new());
+            composing.set(String::new());
             status.set(format!("Comment posted on {place}"));
         }
     };

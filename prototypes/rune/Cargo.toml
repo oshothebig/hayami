@@ -1,0 +1,23 @@
+[package]
+name = "hayami-rune"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+
+[patch.crates-io]
+winit = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "b39e1b4d326e323e971b86b8f105d3df53d4642c" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

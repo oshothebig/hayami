@@ -1,0 +1,6 @@
+[
+  {"t": 0.1, "type": "tap", "key": "file-4"},
+  {"t": 0.5, "type": "tap", "key": "file-8"},
+  {"t": 0.9, "type": "tap", "key": "file-1"},
+  {"t": 1.5, "type": "mark", "name": "end"}
+]

@@ -157,6 +157,13 @@ impl ReviewModel {
         }
     }
 
+    pub fn active_hunk(&self, visible: (usize, usize)) -> (usize, usize) {
+        self.cursor
+            .filter(|_| self.selection().is_some())
+            .map(|p| (p.file, p.hunk))
+            .unwrap_or(visible)
+    }
+
     pub fn navigate_hunk(
         &self,
         current: (usize, usize),
@@ -373,6 +380,30 @@ mod tests {
                 Row::Comment(0)
             ]
         );
+    }
+    #[test]
+    fn selected_lower_hunk_takes_precedence_over_viewport() {
+        let mut m = ReviewModel::new(crate::diff::parse("diff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-old\n+new\n@@ -10 +10 @@\n-before\n+after\n").unwrap());
+        let visible = (0, 0);
+        assert_eq!(m.active_hunk(visible), visible);
+        m.select(
+            Position {
+                hunk: 1,
+                line: 1,
+                ..p(0)
+            },
+            false,
+        );
+        let current = m.active_hunk(visible);
+        assert_eq!(current, (0, 1));
+        m.toggle(current.0, current.1);
+        assert!(m.collapsed.contains(&(0, 1)));
+        assert!(!m.collapsed.contains(&visible));
+        assert_eq!(m.navigate_hunk(current, -1), Some((0, 0)));
+        assert_eq!(m.navigate_hunk(current, 1), Some((0, 1)));
+        m.cursor = None;
+        m.origin = None;
+        assert_eq!(m.active_hunk(visible), visible);
     }
     #[test]
     fn navigation_clamps_and_handles_empty() {

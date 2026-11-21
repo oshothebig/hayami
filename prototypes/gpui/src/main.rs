@@ -126,7 +126,8 @@ impl Review {
         self.jump(Row::File(self.current_file));
     }
     fn hunk(&mut self, direction: isize) {
-        if let Some((f, h)) = self.model.navigate_hunk(self.current_hunk, direction) {
+        let current = self.model.active_hunk(self.current_hunk);
+        if let Some((f, h)) = self.model.navigate_hunk(current, direction) {
             self.current_hunk = (f, h);
             self.current_file = f;
             self.model.select(
@@ -141,7 +142,7 @@ impl Review {
         }
     }
     fn toggle(&mut self) {
-        let (f, h) = self.current_hunk;
+        let (f, h) = self.model.active_hunk(self.current_hunk);
         self.model.toggle(f, h);
         self.rebuild();
         self.jump(Row::Hunk(f, h));
@@ -221,6 +222,8 @@ impl Review {
                     ))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.focus.focus(window, cx);
+                        this.model.cursor = None;
+                        this.model.origin = None;
                         this.current_hunk = (f, h);
                         this.toggle();
                         cx.notify();
@@ -341,7 +344,7 @@ impl Review {
             let top=this.list.logical_scroll_top().item_ix.min(this.rows.len().saturating_sub(1));
             if let Some(row)=this.rows.get(top).copied() {
                 if let Some(f)=this.model.row_file(row) { if f!=this.current_file { this.current_file=f; this.sidebar.scroll_to_item(f,ScrollStrategy::Nearest); cx.notify(); } }
-                let hunk=match row { Row::File(f)=>Some((f,0)),Row::Hunk(f,h)=>Some((f,h)),Row::Line(p)=>Some((p.file,p.hunk)),_=>None }; if let Some(hunk)=hunk { this.current_hunk=hunk; }
+                let hunk=match row { Row::File(f)=>Some((f,0)),Row::Hunk(f,h)=>Some((f,h)),Row::Line(p)=>Some((p.file,p.hunk)),_=>None }; if let Some(hunk)=hunk { this.current_hunk=this.model.active_hunk(hunk); }
             }
             if let Some(targets)=&this.bench {
                 if let Some(target)=targets.get(this.bench_index) { this.list.scroll_to(ListOffset {item_ix:*target,offset_in_item:px(0.)}); this.bench_index+=1; cx.notify(); }

@@ -17,7 +17,7 @@ pub enum Side {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Anchor {
-    pub file: String,
+    pub file: usize,
     pub side: Side,
     pub start: usize,
     pub end: usize,
@@ -78,15 +78,20 @@ impl ReviewModel {
     }
 
     pub fn point(&self, p: Position) -> Option<Anchor> {
-        let file = self.files.get(p.file)?;
-        let line = file.hunks.get(p.hunk)?.lines.get(p.line)?;
+        let line = self
+            .files
+            .get(p.file)?
+            .hunks
+            .get(p.hunk)?
+            .lines
+            .get(p.line)?;
         let (side, number) = if line.kind == LineKind::Delete {
             (Side::Old, line.old_number?)
         } else {
             (Side::New, line.new_number?)
         };
         Some(Anchor {
-            file: file_key(file).into(),
+            file: p.file,
             side,
             start: number,
             end: number,
@@ -199,7 +204,7 @@ impl ReviewModel {
     }
 
     fn anchor_hunk(&self, anchor: &Anchor, f: usize, h: usize) -> bool {
-        file_key(&self.files[f]) == anchor.file
+        f == anchor.file
             && self.files[f].hunks[h].lines.iter().any(|line| {
                 let number = if anchor.side == Side::Old {
                     line.old_number
@@ -231,9 +236,7 @@ impl ReviewModel {
                             } else {
                                 hunk.lines[l].new_number
                             };
-                            if comment.anchor.file == file_key(file)
-                                && number == Some(comment.anchor.end)
-                            {
+                            if comment.anchor.file == f && number == Some(comment.anchor.end) {
                                 rows.push(Row::Comment(i));
                             }
                         }
@@ -243,7 +246,7 @@ impl ReviewModel {
                             } else {
                                 hunk.lines[l].new_number
                             };
-                            if anchor.file == file_key(file) && number == Some(anchor.end) {
+                            if anchor.file == f && number == Some(anchor.end) {
                                 rows.push(Row::Draft);
                             }
                         }
@@ -271,14 +274,8 @@ impl ReviewModel {
         match row {
             Row::File(f) | Row::Hunk(f, _) => Some(f),
             Row::Line(p) => Some(p.file),
-            Row::Comment(i) => self
-                .files
-                .iter()
-                .position(|f| file_key(f) == self.comments[i].anchor.file),
-            Row::Draft => self
-                .files
-                .iter()
-                .position(|f| self.draft.as_ref().is_some_and(|a| a.file == file_key(f))),
+            Row::Comment(i) => Some(self.comments[i].anchor.file),
+            Row::Draft => self.draft.as_ref().map(|a| a.file),
         }
     }
 }
@@ -304,7 +301,7 @@ mod tests {
         assert_eq!(
             m.selection().unwrap(),
             Anchor {
-                file: "a.rs".into(),
+                file: 0,
                 side: Side::New,
                 start: 2,
                 end: 3
@@ -338,13 +335,44 @@ mod tests {
         m.select(p(0), false);
         m.draft = m.selection();
         assert!(m.submit("Removed intentionally"));
-        assert_eq!(m.comments[0].anchor.file, "a.rs");
+        assert_eq!(m.comments[0].anchor.file, 0);
         assert_eq!(m.comments[0].anchor.side, Side::Old);
         assert_eq!(
             m.rows().iter().filter(|r| **r == Row::Comment(0)).count(),
             1
         );
         assert_eq!(m.row_file(Row::Comment(0)), Some(0));
+    }
+    #[test]
+    fn deletion_and_rename_to_same_path_have_distinct_anchors() {
+        let mut m = ReviewModel::new(crate::diff::parse("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-removed\ndiff --git a/b.rs b/a.rs\nrename from b.rs\nrename to a.rs\n--- a/b.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-before\n+after\n").unwrap());
+        let renamed = Position { file: 1, ..p(0) };
+        assert_ne!(m.point(p(0)).unwrap().file, m.point(renamed).unwrap().file);
+        m.select(p(0), false);
+        m.select(renamed, true);
+        assert_eq!(m.cursor, Some(p(0)));
+        m.select(renamed, false);
+        m.draft = m.selection();
+        assert_eq!(m.rows().iter().filter(|r| **r == Row::Draft).count(), 1);
+        assert_eq!(m.row_file(Row::Draft), Some(1));
+        assert!(m.submit("Rename comment"));
+        assert_eq!(
+            m.rows().iter().filter(|r| **r == Row::Comment(0)).count(),
+            1
+        );
+        assert_eq!(m.row_file(Row::Comment(0)), Some(1));
+        m.toggle(0, 0);
+        m.toggle(1, 0);
+        assert_eq!(
+            m.rows(),
+            vec![
+                Row::File(0),
+                Row::Hunk(0, 0),
+                Row::File(1),
+                Row::Hunk(1, 0),
+                Row::Comment(0)
+            ]
+        );
     }
     #[test]
     fn navigation_clamps_and_handles_empty() {

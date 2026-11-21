@@ -7,6 +7,7 @@ on:
     - ".github/workflows/validate-claude.yaml"
     - "tools/claude/**"
     - "justfile"
+    - "mise.toml"
   push:
     branches: [main]
     paths:
@@ -14,6 +15,7 @@ on:
     - ".github/workflows/validate-claude.yaml"
     - "tools/claude/**"
     - "justfile"
+    - "mise.toml"
 
 permissions:
   contents: read
@@ -23,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7.0.1
-    - uses: extractions/setup-just@v4.0.0
+    - name: Install just
+      uses: jdx/mise-action@v5.2.10
     - name: Validate .claude/settings.json against its JSON schema
       run: just validate-claude

@@ -119,6 +119,31 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_is_consumed_once_across_repeated_submit_dispatches() {
+        for submissions in [
+            vec!["日本語", "日本語"],
+            vec!["日本語", "日本語", "日本語"],
+            vec!["", " \n ", "日本語", "日本語"],
+        ] {
+            let anchor = DiffLineRange::new("tests/regression.rs", DiffSide::Modified, 383, 383);
+            let mut draft = Some(anchor.clone());
+            let comments = submissions
+                .into_iter()
+                .filter_map(|text| Comment::submit(&mut draft, text))
+                .collect::<Vec<_>>();
+            assert_eq!(comments.len(), 1);
+            assert_eq!(comments[0].range, anchor);
+            assert_eq!(comments[0].text, "日本語");
+            assert!(draft.is_none());
+            assert!(Comment::submit(&mut draft, "日本語").is_none());
+
+            draft = Some(anchor);
+            assert!(Comment::submit(&mut draft, "日本語").is_some());
+            assert!(Comment::submit(&mut draft, "日本語").is_none());
+        }
+    }
+
+    #[test]
     fn component_parser_reads_shared_fixture_and_rejects_malformed_patch() {
         let files = DiffFile::parse(include_str!("../../../fixtures/ripgrep-2610.diff")).unwrap();
         assert_eq!(files.len(), 32);

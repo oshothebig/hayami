@@ -11,3 +11,23 @@ build-json-schema-validator:
 # Validate the Claude Code settings (.claude/settings.json) against its JSON schema inside a container
 validate-claude: build-json-schema-validator
     docker run --rm -v "{{justfile_directory()}}:/workspace:ro" {{image}} .claude/settings.json
+
+# Check Rust formatting
+fmt:
+    cargo fmt --all -- --check
+
+# Apply Rust formatting
+fmt-fix:
+    cargo fmt --all
+
+# Run Clippy on all workspace targets, treating warnings as errors
+lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Run all workspace tests
+test:
+    cargo test --workspace --locked
+
+# Build all workspace crates
+build:
+    cargo build --workspace --locked

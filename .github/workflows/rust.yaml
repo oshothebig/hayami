@@ -1,0 +1,47 @@
+name: Rust
+
+on:
+  pull_request:
+    paths:
+    - "Cargo.toml"
+    - "Cargo.lock"
+    - "**/*.rs"
+    - ".github/workflows/rust.yaml"
+    - ".github/workflows/actions.lock"
+    - "justfile"
+    - "mise.toml"
+  push:
+    branches: [main]
+    paths:
+    - "Cargo.toml"
+    - "Cargo.lock"
+    - "**/*.rs"
+    - ".github/workflows/rust.yaml"
+    - ".github/workflows/actions.lock"
+    - "justfile"
+    - "mise.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Install GPUI system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+          libvulkan-dev libfontconfig-dev libfreetype-dev libx11-xcb-dev \
+          libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libssl-dev \
+          libasound2-dev clang cmake
+    - name: Install Rust toolchain and just
+      uses: jdx/mise-action@v5.2.10
+    - name: Check formatting
+      run: just format-check
+    - name: Run Clippy
+      run: just lint
+    - name: Run tests
+      run: just test

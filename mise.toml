@@ -1,5 +1,5 @@
 # Tools required by this repository's tasks (see justfile).
-# Shared with the Validate Claude Code settings workflow (.github/workflows/validate-claude.yaml).
+# Shared with the CI workflows (.github/workflows/validate-claude.yaml and .github/workflows/rust.yaml).
 # Docker is also required but is not managed by mise.
 [tools]
 just = "1.59.0"

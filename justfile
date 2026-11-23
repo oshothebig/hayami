@@ -16,6 +16,10 @@ validate-claude: build-json-schema-validator
 format:
     cargo fmt --all
 
+# Check Rust code formatting without modifying files
+format-check:
+    cargo fmt --all -- --check
+
 # Run Clippy on all workspace targets, treating warnings as errors
 lint:
     cargo clippy --workspace --all-targets -- -D warnings

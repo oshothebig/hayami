@@ -25,6 +25,7 @@
 Rust コードの整形・静的解析・テスト・ビルドには、リポジトリルートで次の `just` レシピを使用してください。
 
 - `just format`: 整形の適用
+- `just format-check`: 整形の確認 (ファイルは変更しない)
 - `just lint`: Clippy による静的解析 (警告はエラーとして扱う)
 - `just test`: テストの実行
 - `just build`: ビルド

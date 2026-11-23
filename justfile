@@ -12,12 +12,8 @@ build-json-schema-validator:
 validate-claude: build-json-schema-validator
     docker run --rm -v "{{justfile_directory()}}:/workspace:ro" {{image}} .claude/settings.json
 
-# Check Rust formatting
-fmt:
-    cargo fmt --all -- --check
-
-# Apply Rust formatting
-fmt-fix:
+# Format Rust code
+format:
     cargo fmt --all
 
 # Run Clippy on all workspace targets, treating warnings as errors

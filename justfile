@@ -27,3 +27,8 @@ test:
 # Build all workspace crates
 build:
     cargo build --workspace --locked
+
+# Run the hayami desktop app
+[positional-arguments]
+run *args:
+    cargo run --locked -- "$@"

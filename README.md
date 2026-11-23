@@ -30,6 +30,16 @@ See [LICENSE](LICENSE).
 
 ## Development
 
+Build and run the empty desktop app with the Rust toolchain and `just` versions
+in [mise.toml](mise.toml):
+
+```sh
+just build
+cargo run --locked
+```
+
+Use `just format`, `just lint`, and `just test` to check changes.
+
 Validate the Claude Code settings (`.claude/settings.json`) against their JSON schema in a container (requires [just](https://github.com/casey/just) and Docker):
 
 ```sh

@@ -22,7 +22,7 @@ format-check:
 
 # Run Clippy on all workspace targets, treating warnings as errors
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # Run all workspace tests
 test:

@@ -3,4 +3,4 @@
 # Docker is also required but is not managed by mise.
 [tools]
 just = "1.59.0"
-rust = "1.100.0"
+rust = { version = "1.100.0", components = "rustfmt,clippy" }

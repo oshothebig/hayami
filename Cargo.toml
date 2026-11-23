@@ -1,0 +1,11 @@
+[package]
+name = "hayami"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+gpui-kit = "=0.10.0"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.10.0", default-features = false, features = ["test-support"] }

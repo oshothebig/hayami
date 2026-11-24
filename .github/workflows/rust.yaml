@@ -1,0 +1,66 @@
+name: Rust
+
+on:
+  pull_request:
+    paths:
+    - "Cargo.toml"
+    - "Cargo.lock"
+    - "**/*.rs"
+    - ".github/workflows/rust.yaml"
+    - ".github/workflows/actions.lock"
+    - "justfile"
+    - "mise.toml"
+  push:
+    branches: [main]
+    paths:
+    - "Cargo.toml"
+    - "Cargo.lock"
+    - "**/*.rs"
+    - ".github/workflows/rust.yaml"
+    - ".github/workflows/actions.lock"
+    - "justfile"
+    - "mise.toml"
+
+permissions:
+  contents: read
+
+env:
+  GPUI_SYSTEM_DEPS: >-
+    pkg-config libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev
+    libxcb1-dev
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Install Rust toolchain and just
+      uses: jdx/mise-action@v5.2.10
+    - name: Check formatting
+      run: just format-check
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Install GPUI system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends $GPUI_SYSTEM_DEPS
+    - name: Install Rust toolchain and just
+      uses: jdx/mise-action@v5.2.10
+    - name: Run Clippy
+      run: just lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Install GPUI system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends $GPUI_SYSTEM_DEPS
+    - name: Install Rust toolchain and just
+      uses: jdx/mise-action@v5.2.10
+    - name: Run tests
+      run: just test

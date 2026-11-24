@@ -3,6 +3,9 @@
 # Docs: https://gh.io/actions-lockfile
 version: 'v0.0.3'
 workflows:
+    '.github/workflows/rust.yaml':
+        - 'actions/checkout@v7.0.1'
+        - 'jdx/mise-action@v5.2.10'
     '.github/workflows/validate-claude.yaml':
         - 'actions/checkout@v7.0.1'
         - 'jdx/mise-action@v5.2.10'

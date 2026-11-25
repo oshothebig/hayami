@@ -64,3 +64,14 @@ jobs:
       uses: jdx/mise-action@v5.2.10
     - name: Run tests
       run: just test
+
+  macos-build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Install Rust toolchain and just
+      uses: jdx/mise-action@v5.2.10
+    - name: Build hayami
+      run: just build
+    - name: Run tests
+      run: just test

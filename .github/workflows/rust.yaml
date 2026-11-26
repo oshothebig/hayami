@@ -43,7 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7.0.1
-    - name: Install GPUI system dependencies
+    - &install-linux-gpui-deps
+      name: Install GPUI system dependencies
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends $GPUI_SYSTEM_DEPS
@@ -53,25 +55,26 @@ jobs:
       run: just lint
 
   test:
-    runs-on: ubuntu-latest
+    strategy: &rust-platforms
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v7.0.1
-    - name: Install GPUI system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends $GPUI_SYSTEM_DEPS
+    - *install-linux-gpui-deps
     - name: Install Rust toolchain and just
       uses: jdx/mise-action@v5.2.10
     - name: Run tests
       run: just test
 
-  macos-build:
-    runs-on: macos-latest
+  build:
+    strategy: *rust-platforms
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v7.0.1
+    - *install-linux-gpui-deps
     - name: Install Rust toolchain and just
       uses: jdx/mise-action@v5.2.10
     - name: Build hayami
       run: just build
-    - name: Run tests
-      run: just test

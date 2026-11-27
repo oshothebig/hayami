@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7.0.1
-    - &install-linux-gpui-deps
+    - &install-linux-deps
       name: Install GPUI system dependencies
       if: runner.os == 'Linux'
       run: |
@@ -55,25 +55,25 @@ jobs:
       run: just lint
 
   test:
-    strategy: &rust-platforms
+    strategy: &ci-platforms
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v7.0.1
-    - *install-linux-gpui-deps
+    - *install-linux-deps
     - name: Install Rust toolchain and just
       uses: jdx/mise-action@v5.2.10
     - name: Run tests
       run: just test
 
   build:
-    strategy: *rust-platforms
+    strategy: *ci-platforms
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v7.0.1
-    - *install-linux-gpui-deps
+    - *install-linux-deps
     - name: Install Rust toolchain and just
       uses: jdx/mise-action@v5.2.10
     - name: Build hayami
